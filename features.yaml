@@ -1,0 +1,31 @@
+features:
+  - id: conversational_ai
+    name: IA Conversacional Multicanal
+    description: Chatbots y voicebots para WhatsApp, IG, FB, TikTok, Telegram, email, SMS, llamadas.
+  - id: lead_qualification
+    name: Motor de Calificación y Seguimiento
+    description: Análisis de interacciones para calificar leads y programar seguimientos.
+  - id: ad_optimization
+    name: Optimización Publicitaria
+    description: Creación de audiencias lookalike y ajuste de presupuestos en Ads.
+  - id: nocode_orchestration
+    name: Orquestación No-Code
+    description: Constructor visual drag-and-drop para flujos automatizados.
+  - id: unified_dashboard
+    name: Panel de Control Unificado
+    description: Métricas clave, insights y monitorización.
+  - id: integrations
+    name: Sistema de Integraciones
+    description: Conectores nativos y API abierta.
+  - id: ux_onboarding
+    name: Experiencia de Usuario
+    description: Onboarding guiado, diseño intuitivo.
+  - id: pricing
+    name: Plan de Precios Flexible
+    description: Freemium y pago por uso/escalable.
+  - id: security
+    name: Seguridad y Cumplimiento
+    description: Cifrado, GDPR, RBAC.
+  - id: multi_model
+    name: Multi-modelo y Créditos
+    description: Uso optimizado de Gemini, Llama 3, Mistral, etc.
