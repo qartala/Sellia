@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getDb } from '../db.js';
+import { sendEmail, collectionReminderEmailHtml } from './email.js';
 
 // ─── AI client ────────────────────────────────────────────────────────────────
 
@@ -150,16 +151,29 @@ export async function runCollectionScheduler(): Promise<void> {
   console.log('[Collections] Scheduler run started');
   const db = getDb();
 
-  // Get all active payment plans with their WhatsApp config and AI collection prompt
+  // Debug: show why plans might be skipped
+  const totalActive = (db.prepare("SELECT COUNT(*) as n FROM payment_plans WHERE status='active'").get() as any).n;
+  const withPhone = (db.prepare("SELECT COUNT(*) as n FROM payment_plans WHERE status='active' AND debtor_phone != ''").get() as any).n;
+  const withWA = (db.prepare(`
+    SELECT COUNT(*) as n FROM payment_plans pp
+    JOIN whatsapp_configs wc ON wc.user_id = pp.user_id
+    WHERE pp.status = 'active' AND pp.debtor_phone != '' AND wc.enabled = 1
+  `).get() as any).n;
+  const withEmail = (db.prepare(`
+    SELECT COUNT(*) as n FROM payment_plans pp
+    JOIN leads l ON l.id = pp.lead_id
+    WHERE pp.status = 'active' AND l.email != '' AND l.email IS NOT NULL
+  `).get() as any).n;
+  console.log(`[Collections] Plans: total_active=${totalActive}, with_phone=${withPhone}, with_wa_configured=${withWA}, with_email=${withEmail}`);
+
+  // Get all active payment plans (WhatsApp optional — email always attempted)
   const plans = db.prepare(`
     SELECT pp.*, wc.phone_number_id, wc.access_token,
            kb.collection_prompt
     FROM payment_plans pp
-    JOIN whatsapp_configs wc ON wc.user_id = pp.user_id
+    LEFT JOIN whatsapp_configs wc ON wc.user_id = pp.user_id AND wc.enabled = 1
     LEFT JOIN knowledge_base kb ON kb.user_id = pp.user_id
     WHERE pp.status = 'active'
-      AND pp.debtor_phone != ''
-      AND wc.enabled = 1
   `).all() as any[];
 
   const today = new Date();
@@ -202,13 +216,34 @@ export async function runCollectionScheduler(): Promise<void> {
           const phone = plan.debtor_phone.replace(/^\+/, '');
           const collectionPrompt = plan.collection_prompt || '';
 
-          // Determine which messages to send
-          const toSend: string[] = [];
-          if (daysDiff >= -5 && !sentTypes.has('reminder_5d')) toSend.push('reminder_5d');
-          if (daysDiff >= 0 && !sentTypes.has('due_day')) toSend.push('due_day');
-          if (daysDiff >= 3 && !sentTypes.has('late_3d')) toSend.push('late_3d');
-          if (daysDiff >= 7 && !sentTypes.has('late_7d')) toSend.push('late_7d');
-          if (daysDiff >= 15 && !sentTypes.has('late_15d')) toSend.push('late_15d');
+          // Send at most ONE message per installment per run (most urgent not yet sent).
+          // This prevents flooding when multiple thresholds are crossed at once.
+          let msgToSend: string | null = null;
+          if      (daysDiff >= 15 && !sentTypes.has('late_15d'))  msgToSend = 'late_15d';
+          else if (daysDiff >= 7  && !sentTypes.has('late_7d'))   msgToSend = 'late_7d';
+          else if (daysDiff >= 3  && !sentTypes.has('late_3d'))   msgToSend = 'late_3d';
+          else if (daysDiff >= 0  && !sentTypes.has('due_day'))   msgToSend = 'due_day';
+          else if (daysDiff >= -5 && !sentTypes.has('reminder_5d')) msgToSend = 'reminder_5d';
+
+          // For plans >30 days overdue where late_15d was already sent,
+          // re-send late_15d every 30 days as a periodic follow-up.
+          if (!msgToSend && daysDiff >= 30 && sentTypes.has('late_15d')) {
+            const lastSent = db.prepare(`
+              SELECT sent_at FROM collection_messages_sent
+              WHERE installment_id = ? AND message_type = 'late_15d'
+              ORDER BY sent_at DESC LIMIT 1
+            `).get(installment.id) as any;
+            if (lastSent) {
+              const daysSinceLast = Math.floor((today.getTime() - new Date(lastSent.sent_at).getTime()) / 86400000);
+              if (daysSinceLast >= 30) msgToSend = 'late_15d';
+            }
+          }
+
+          const toSend = msgToSend ? [msgToSend] : [];
+
+          if (toSend.length === 0) {
+            console.log(`[Collections] Plan ${plan.id} installment ${installNum}: nothing to send (daysDiff=${daysDiff}, already sent: ${[...sentTypes].join(', ') || 'none'})`);
+          }
 
           for (const msgType of toSend) {
             try {
@@ -223,15 +258,40 @@ export async function runCollectionScheduler(): Promise<void> {
                 messageText = template(name, installNum, amountStr, dueDateStr, payLink, bankInfo);
               }
 
-              await sendWhatsAppMessage(plan.phone_number_id, plan.access_token, phone, messageText);
+              let anySent = false;
 
-              // Record that message was sent
+              // Send WhatsApp only if configured
+              if (plan.phone_number_id && plan.access_token && phone) {
+                await sendWhatsAppMessage(plan.phone_number_id, plan.access_token, phone, messageText);
+                anySent = true;
+              }
+
+              // Send email if debtor has email on file
+              const leadRow = plan.lead_id
+                ? (db.prepare('SELECT email FROM leads WHERE id = ?').get(plan.lead_id) as any)
+                : null;
+              const debtorEmail = leadRow?.email;
+              if (debtorEmail) {
+                const emailSent = await sendEmail(
+                  debtorEmail,
+                  `Recordatorio de pago – Cuota N°${installNum}`,
+                  collectionReminderEmailHtml({ debtorName: name, installmentNum: installNum, amount: amountStr, dueDate: dueDateStr, msgType, payLink, bankInfo }),
+                );
+                if (emailSent) anySent = true;
+              }
+
+              // Only record as sent if at least one channel succeeded
+              if (!anySent) {
+                console.warn(`[Collections] No channel available for plan ${plan.id} installment ${installNum} (no WhatsApp + no valid SMTP/email)`);
+                continue;
+              }
+
               db.prepare(`
                 INSERT INTO collection_messages_sent (installment_id, message_type)
                 VALUES (?, ?)
               `).run(installment.id, msgType);
 
-              console.log(`[Collections] Sent ${msgType} to ${phone} for plan ${plan.id} installment ${installNum}`);
+              console.log(`[Collections] Sent ${msgType} to plan ${plan.id} installment ${installNum} (email: ${debtorEmail || '—'}, wa: ${phone || '—'})`);
             } catch (msgErr: any) {
               console.error(`[Collections] Failed to send ${msgType} to ${phone} for plan ${plan.id}:`, msgErr.message);
             }
@@ -258,6 +318,45 @@ export async function runCollectionScheduler(): Promise<void> {
   }
 
   console.log(`[Collections] Scheduler run complete — checked ${checkedPlans} plans`);
+}
+
+// ─── Immediate plan-created WhatsApp notification ─────────────────────────────
+
+export async function sendPlanCreatedNotification(
+  userId: number,
+  debtorPhone: string,
+  debtorName: string,
+  installmentsCount: number,
+  totalAmount: number,
+  firstDueDate: string,
+  collectionPrompt: string,
+): Promise<void> {
+  if (!debtorPhone) return;
+  const db = getDb();
+  const wc = db.prepare('SELECT phone_number_id, access_token FROM whatsapp_configs WHERE user_id = ? AND enabled = 1').get(userId) as any;
+  if (!wc) {
+    console.log(`[Collections] No WhatsApp config for user ${userId} — skipping plan-created notification`);
+    return;
+  }
+  const amountPerInstallment = (totalAmount / installmentsCount).toFixed(0);
+  const amountFmt = Number(amountPerInstallment).toLocaleString('es-CL');
+  const totalFmt = Number(totalAmount).toLocaleString('es-CL');
+
+  let message = await generateAIMessage(
+    'reminder_5d', debtorName, 1, amountFmt, firstDueDate, '', '', collectionPrompt
+  ).catch(() => null);
+
+  if (!message) {
+    message = `Hola ${debtorName} 👋 Tu plan de pago ha sido registrado exitosamente.\n\n💰 Total: $${totalFmt} en ${installmentsCount} cuota(s) de $${amountFmt}\n📅 Primera cuota: ${firstDueDate}\n\nTe enviaremos recordatorios antes de cada vencimiento. ¡Gracias!`;
+  }
+
+  try {
+    const phone = debtorPhone.replace(/^\+/, '');
+    await sendWhatsAppMessage(wc.phone_number_id, wc.access_token, phone, message);
+    console.log(`[Collections] Plan-created notification sent to ${phone}`);
+  } catch (err: any) {
+    console.error(`[Collections] Failed to send plan-created notification:`, err.message);
+  }
 }
 
 // ─── Start interval ───────────────────────────────────────────────────────────

@@ -288,7 +288,8 @@ function runMigrations(db: Database.Database) {
   try { db.exec('ALTER TABLE user_features ADD COLUMN openai_api_key TEXT'); } catch (_) {}
   try { db.exec('ALTER TABLE leads ADD COLUMN phone_number TEXT'); } catch (_) {}
   try { db.exec('ALTER TABLE leads ADD COLUMN wa_message_id TEXT'); } catch (_) {}
-  try { db.exec("ALTER TABLE leads ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))"); } catch (_) {}
+  try { db.exec("ALTER TABLE leads ADD COLUMN updated_at TEXT"); } catch (_) {}
+  try { db.exec("UPDATE leads SET updated_at = created_at WHERE updated_at IS NULL"); } catch (_) {}
   try { db.exec('ALTER TABLE calendar_events ADD COLUMN location TEXT NOT NULL DEFAULT ""'); } catch (_) {}
   try { db.exec('ALTER TABLE calendar_events ADD COLUMN google_event_id TEXT'); } catch (_) {}
   try { db.exec("ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'bot'"); } catch (_) {}
@@ -302,8 +303,8 @@ function runMigrations(db: Database.Database) {
   try { db.exec("ALTER TABLE knowledge_base ADD COLUMN collection_prompt TEXT NOT NULL DEFAULT ''"); } catch (_) {}
 
   // Missing updated_at columns in whatsapp_configs and knowledge_base
-  try { db.exec("ALTER TABLE whatsapp_configs ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))"); } catch (_) {}
-  try { db.exec("ALTER TABLE knowledge_base ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))"); } catch (_) {}
+  try { db.exec("ALTER TABLE whatsapp_configs ADD COLUMN updated_at TEXT"); } catch (_) {}
+  try { db.exec("ALTER TABLE knowledge_base ADD COLUMN updated_at TEXT"); } catch (_) {}
 
   // SMTP & notification preferences migrations
   try { db.exec("ALTER TABLE notification_prefs ADD COLUMN booking_email INTEGER NOT NULL DEFAULT 1"); } catch (_) {}

@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import OpenAI from 'openai';
 import { getDb } from '../db.js';
 import { AuthRequest } from '../types.js';
+import { sendEmail, bookingEmailHtml, collectionPlanEmailHtml } from '../lib/email.js';
+import { sendPlanCreatedNotification } from '../lib/collectionScheduler.js';
 
 const router = Router();
 
@@ -144,6 +146,56 @@ function detectServerSideCancellation(messages: any[]): boolean {
   const cancelWords = ['cancelar','cancela','cancelame','cancélame','eliminar','elimina','elimíname','borrar','borra','borrame','bórrame','quitar','quitame','quítame'];
   const eventWords = ['cita','reunión','reunion','evento','turno','agendada','agendado','asesor','demo','hoy'];
   return cancelWords.some(w => text.includes(w)) && eventWords.some(w => text.includes(w));
+}
+
+// Extractor for PLAN_COBRANZA: marker
+function extractColPlanData(text: string): { colPlanData: any; cleanText: string } {
+  const marker = 'PLAN_COBRANZA:';
+  const idx = text.indexOf(marker);
+  if (idx === -1) return { colPlanData: null, cleanText: text };
+  const jsonStart = text.indexOf('{', idx);
+  if (jsonStart === -1) return { colPlanData: null, cleanText: text };
+  let depth = 0, jsonEnd = -1;
+  for (let i = jsonStart; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) { jsonEnd = i; break; } }
+  }
+  if (jsonEnd === -1) return { colPlanData: null, cleanText: text };
+  try {
+    const colPlanData = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    const cleanText = (text.slice(0, idx) + text.slice(jsonEnd + 1)).replace(/\s+/g, ' ').trim();
+    return { colPlanData, cleanText };
+  } catch { return { colPlanData: null, cleanText: text }; }
+}
+
+function autoCreateCollectionPlan(userId: number, leadId: number, leadName: string, leadPhone: string, colPlanData: any): void {
+  try {
+    const db = getDb();
+    // Avoid duplicates: if a plan already exists for this lead, skip
+    const existing = db.prepare('SELECT id FROM payment_plans WHERE user_id = ? AND lead_id = ?').get(userId, leadId);
+    if (existing) { console.log(`[AI] Collection plan already exists for lead ${leadId}, skipping`); return; }
+
+    const count = parseInt(colPlanData.cuotas, 10) || 2;
+    const total = parseFloat(colPlanData.monto_total) || 0;
+    const amountPerInstallment = parseFloat((total / count).toFixed(2));
+    const startDate = colPlanData.fecha_inicio || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+
+    const result = db.prepare(`
+      INSERT INTO payment_plans (user_id, lead_id, name, debtor_name, debtor_phone, total_amount, installments_count, payment_link, bank_info, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', '', 'Plan creado automáticamente por Sellia IA')
+    `).run(userId, leadId, `Plan – ${leadName}`, leadName, leadPhone || '', total, count);
+
+    const planId = result.lastInsertRowid as number;
+    const installStmt = db.prepare(`INSERT INTO payment_installments (plan_id, installment_number, amount, due_date) VALUES (?, ?, ?, ?)`);
+    for (let i = 0; i < count; i++) {
+      const dueDate = new Date(startDate);
+      dueDate.setDate(dueDate.getDate() + i * 30);
+      installStmt.run(planId, i + 1, amountPerInstallment, dueDate.toISOString().split('T')[0]);
+    }
+    console.log(`[AI] Auto-created collection plan ${planId} for lead ${leadId}: ${count} cuotas de $${amountPerInstallment}`);
+  } catch (err: any) {
+    console.error('[AI] Error auto-creating collection plan:', err.message);
+  }
 }
 
 // Robust JSON extractor for CITA_AGENDADA: marker
@@ -313,7 +365,7 @@ router.post('/chat', async (req: AuthRequest, res: Response) => {
     }).join('\n');
 
     const calendarSection = needsCalendar && effectiveUserId
-      ? `\n\nAGENDAMIENTO:\n- Hoy es ${todayStr} (${dayNames[today.getDay()]}). Usa esta fecha como referencia absoluta.\n- Próximas fechas para que uses la correcta cuando el cliente diga un día de la semana:\n${upcomingDays}\n- Si el cliente quiere agendar, sugiere horarios disponibles según el calendario.\n- CRÍTICO: Los horarios marcados como "ya ocupados" NO están disponibles. NUNCA ofrezcas ni confirmes una cita en un horario ocupado. Si el cliente pide un horario ocupado, ofrece el siguiente horario libre.\n- En cuanto el cliente confirme una fecha y hora LIBRE, DEBES incluir en tu respuesta:\n  CITA_AGENDADA:{"titulo":"[nombre del servicio/visita]","fecha":"YYYY-MM-DD","hora_inicio":"HH:MM","hora_fin":"HH:MM","descripcion":"[detalle breve]"}\n- IMPORTANTE: Solo emite CITA_AGENDADA una vez por conversación. Si ya se emitió antes, NO lo repitas.\n- La fecha "mañana" es ${tomorrowStr}.\n- Después del JSON confirma la cita de forma natural (ej: "¡Listo! Te esperamos mañana a las 13:00 🗓️").\n- CANCELACIÓN: Si el cliente pide cancelar, eliminar, borrar o quitar su cita, DEBES incluir exactamente CITA_CANCELADA: en tu respuesta (sin JSON adicional). Luego confirma la cancelación de forma natural y ofrece reagendar.\n\n${getCalendarContext(effectiveUserId!)}`
+      ? `\n\nAGENDAMIENTO:\n- Hoy es ${todayStr} (${dayNames[today.getDay()]}). Usa esta fecha como referencia absoluta.\n- Próximas fechas para que uses la correcta cuando el cliente diga un día de la semana:\n${upcomingDays}\n- Si el cliente quiere agendar, sugiere horarios disponibles según el calendario.\n- CRÍTICO: Los horarios marcados como "ya ocupados" NO están disponibles. NUNCA ofrezcas ni confirmes una cita en un horario ocupado. Si el cliente pide un horario ocupado, ofrece el siguiente horario libre.\n- En cuanto el cliente confirme una fecha y hora LIBRE, DEBES incluir en tu respuesta el marcador CITA_AGENDADA (ver instrucción crítica abajo).\n- IMPORTANTE: Solo emite CITA_AGENDADA una vez por conversación. Si ya se emitió antes, NO lo repitas.\n- La fecha "mañana" es ${tomorrowStr}.\n- Después del JSON confirma la cita de forma natural (ej: "¡Listo! Te esperamos mañana a las 13:00 🗓️").\n- CANCELACIÓN: Si el cliente pide cancelar, eliminar, borrar o quitar su cita, DEBES incluir exactamente CITA_CANCELADA: en tu respuesta (sin JSON adicional). Luego confirma la cancelación de forma natural y ofrece reagendar.\n\n${getCalendarContext(effectiveUserId!)}`
       : '';
 
     const systemInstruction = `Eres un agente de ventas IA por WhatsApp. Tu objetivo es CERRAR VENTAS de forma natural.
@@ -337,8 +389,14 @@ DERIVAR A HUMANO:
 
 CAPTURA DE EMAIL:
 - Si el usuario menciona o te da su email en cualquier momento, extráelo y agrega al FINAL de tu respuesta: EMAIL_CAPTURADO:correo@ejemplo.com
-- Cuando confirmes una CITA o cierre de VENTA y aún no tienes el email del cliente, pídelo de forma natural en el mismo mensaje. Ej: "¡Listo, cita confirmada! 🗓️ ¿Me das tu email para enviarte la confirmación?"
 - Solo pide el email UNA VEZ por conversación. Si ya lo tienes en el historial, no lo vuelvas a pedir.
+
+PLAN DE COBRANZA (AUTOMÁTICO):
+- Si el usuario confirma que pagará en CUOTAS (ej: "en 2 cuotas de 150.000", "pagaré en 3 cuotas"), emite AL FINAL de tu respuesta:
+  PLAN_COBRANZA:{"cuotas":N,"monto_total":NUMERO,"fecha_inicio":"YYYY-MM-DD"}
+- monto_total = total en pesos, número sin puntos ni $. Si dijo "2 cuotas de 150.000" → monto_total=300000.
+- fecha_inicio = primer día del mes siguiente si no la indicaron.
+- Solo emite PLAN_COBRANZA UNA VEZ por conversación. Si ya aparece en el historial, NO lo repitas.
 
 ESTRATEGIA DE CIERRE:
 - Detecta interés real y propón el cierre directamente.
@@ -358,8 +416,12 @@ ${needsCalendar ? `
 ⚠️ INSTRUCCIÓN CRÍTICA DE SISTEMA (PRIORIDAD MÁXIMA, NO IGNORAR):
 Si en este turno el cliente confirmó una fecha y hora para agendar → DEBES incluir OBLIGATORIAMENTE en tu respuesta:
 CITA_AGENDADA:{"titulo":"[motivo]","fecha":"YYYY-MM-DD","hora_inicio":"HH:MM","hora_fin":"HH:MM","descripcion":"[detalle]"}
-Pon el JSON en UNA SOLA LÍNEA sin espacios extra. Sin este tag el agendamiento NO se registra.
-Si el cliente confirmó "mañana a las 10" → fecha=${new Date(Date.now() + 86400000).toISOString().split('T')[0]}, hora_inicio=10:00, hora_fin=11:00.
+Pon el JSON en UNA SOLA LÍNEA sin espacios extra. Sin este tag el agendamiento NO se registra en el sistema.
+Si el cliente dijo "mañana a las 12" → fecha=${new Date(Date.now() + 86400000).toISOString().split('T')[0]}, hora_inicio=12:00, hora_fin=13:00.
+Si el cliente dijo "mañana a las 10" → fecha=${new Date(Date.now() + 86400000).toISOString().split('T')[0]}, hora_inicio=10:00, hora_fin=11:00.
+EJEMPLO de respuesta correcta cuando el cliente confirma cita:
+¡Listo! Te esperamos mañana a las 12:00 🗓️
+CITA_AGENDADA:{"titulo":"Visita","fecha":"${new Date(Date.now() + 86400000).toISOString().split('T')[0]}","hora_inicio":"12:00","hora_fin":"13:00","descripcion":"Visita agendada por el cliente"}
 ` : ''}`;
 
     const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -400,6 +462,10 @@ Si el cliente confirmó "mañana a las 10" → fecha=${new Date(Date.now() + 864
     if (humanRequested) {
       cleanResponse = cleanResponse.replace('DERIVAR_HUMANO:', '').trim();
     }
+
+    // Detect and extract collection plan marker
+    const { colPlanData, cleanText: afterColPlan } = extractColPlanData(cleanResponse);
+    if (colPlanData) cleanResponse = afterColPlan;
 
     // Detect and extract calendar booking
     const { bookingData, cleanText: afterBooking } = extractBookingData(cleanResponse);
@@ -469,20 +535,101 @@ Si el cliente confirmó "mañana a las 10" → fecha=${new Date(Date.now() + 864
       }
 
       if (bookingData && effectiveUserId) {
-        const lead = db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as any;
+        const lead = db.prepare('SELECT name, email FROM leads WHERE id = ?').get(leadId) as any;
         await createCalendarEvent(effectiveUserId, leadId, lead?.name || 'lead', bookingData);
         db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
           effectiveUserId, 'success', '📅 Cita agendada por Sellia',
           `Sellia agendó una cita con ${lead?.name || 'el lead'} para el ${bookingData.fecha} a las ${bookingData.hora_inicio}.`
         );
+        // Send confirmation email if we already have one
+        const emailForBooking = capturedEmail || lead?.email;
+        if (emailForBooking) {
+          sendEmail(
+            emailForBooking,
+            `Confirmación de cita – ${bookingData.titulo || 'Tu cita'}`,
+            bookingEmailHtml({ leadName: lead?.name || 'Cliente', fecha: bookingData.fecha, horaInicio: bookingData.hora_inicio, titulo: bookingData.titulo || 'Cita', descripcion: bookingData.descripcion })
+          ).catch(() => {});
+        } else {
+          // No email yet — ask for it
+          const emailAsk = '¿Me das tu correo electrónico para enviarte la confirmación de tu cita? 📧';
+          parts.push(emailAsk);
+          db.prepare('INSERT INTO messages (lead_id, role, content) VALUES (?, ?, ?)').run(leadId, 'assistant', emailAsk);
+        }
       }
 
-      // Save captured email to lead if not already set
+      // Save captured email and send confirmation if there's a pending booking or collection plan
       if (capturedEmail) {
-        const currentEmail = (db.prepare('SELECT email FROM leads WHERE id = ?').get(leadId) as any)?.email;
-        if (!currentEmail) {
-          db.prepare('UPDATE leads SET email = ? WHERE id = ?').run(capturedEmail, leadId);
-          console.log(`[AI] Email captured for lead ${leadId}: ${capturedEmail}`);
+        db.prepare('UPDATE leads SET email = ? WHERE id = ?').run(capturedEmail, leadId);
+        console.log(`[AI] Email captured for lead ${leadId}: ${capturedEmail}`);
+        // If this lead already has a calendar event, send the confirmation now
+        const existingEvent = db.prepare(
+          'SELECT title, start_datetime FROM calendar_events WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1'
+        ).get(leadId) as any;
+        if (existingEvent) {
+          const lead = db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as any;
+          const startDt = new Date(existingEvent.start_datetime);
+          const fechaStr = startDt.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+          const horaStr = startDt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+          sendEmail(
+            capturedEmail,
+            `Confirmación de cita – ${existingEvent.title}`,
+            bookingEmailHtml({ leadName: lead?.name || 'Cliente', fecha: fechaStr, horaInicio: horaStr, titulo: existingEvent.title })
+          ).catch(() => {});
+        }
+        // If this lead already has a collection plan, send the plan confirmation email now
+        if (!colPlanData) {
+          const existingPlan = db.prepare(
+            `SELECT pp.debtor_name, pp.id,
+               (SELECT COUNT(*) FROM payment_installments WHERE plan_id = pp.id) as cnt,
+               (SELECT SUM(amount) FROM payment_installments WHERE plan_id = pp.id) as total,
+               (SELECT due_date FROM payment_installments WHERE plan_id = pp.id ORDER BY installment_number ASC LIMIT 1) as first_due,
+               pp.payment_link, pp.bank_info
+             FROM payment_plans pp
+             WHERE pp.lead_id = ? AND pp.status = 'active'
+             ORDER BY pp.created_at DESC LIMIT 1`
+          ).get(leadId) as any;
+          if (existingPlan) {
+            const perInstall = Number((existingPlan.total / existingPlan.cnt).toFixed(0));
+            sendEmail(
+              capturedEmail,
+              '💳 Tu plan de pago ha sido confirmado – Sellia',
+              collectionPlanEmailHtml({
+                debtorName: existingPlan.debtor_name,
+                installmentsCount: existingPlan.cnt,
+                amountPerInstallment: perInstall.toLocaleString('es-CL'),
+                totalAmount: Number(existingPlan.total).toLocaleString('es-CL'),
+                firstDueDate: existingPlan.first_due,
+                payLink: existingPlan.payment_link || undefined,
+                bankInfo: existingPlan.bank_info || undefined,
+              }),
+            ).catch(() => {});
+          }
+        }
+      }
+
+      // Auto-create collection plan if AI detected installment payment agreement
+      if (colPlanData && effectiveUserId) {
+        const lead = db.prepare('SELECT name, phone_number FROM leads WHERE id = ?').get(leadId) as any;
+        autoCreateCollectionPlan(effectiveUserId, leadId, lead?.name || 'Cliente', lead?.phone_number || '', colPlanData);
+        db.prepare('INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)').run(
+          effectiveUserId, 'success', '💳 Plan de cobranza creado',
+          `Sellia IA creó automáticamente un plan de ${colPlanData.cuotas} cuotas para ${lead?.name || 'el lead'}.`
+        );
+        const kb = db.prepare('SELECT collection_prompt FROM knowledge_base WHERE user_id = ?').get(effectiveUserId) as any;
+        const firstDue = colPlanData.fecha_inicio || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+        const cuotas = parseInt(colPlanData.cuotas) || 2;
+        const total = parseFloat(colPlanData.monto_total) || 0;
+        const perInstallment = (total / cuotas).toFixed(0);
+        // Send immediate WhatsApp confirmation to the debtor
+        sendPlanCreatedNotification(effectiveUserId, lead?.phone_number || '', lead?.name || 'Cliente', cuotas, total, firstDue, kb?.collection_prompt || '').catch(() => {});
+        // Send email confirmation to the lead if we have their email
+        const leadEmail = (db.prepare('SELECT email FROM leads WHERE id = ?').get(leadId) as any)?.email || capturedEmail;
+        if (leadEmail) {
+          sendEmail(
+            leadEmail,
+            '💳 Tu plan de pago ha sido confirmado – Sellia',
+            collectionPlanEmailHtml({ debtorName: lead?.name || 'Cliente', installmentsCount: cuotas, amountPerInstallment: Number(perInstallment).toLocaleString('es-CL'), totalAmount: Number(total).toLocaleString('es-CL'), firstDueDate: firstDue })
+          ).catch(() => {});
         }
       }
 

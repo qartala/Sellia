@@ -148,6 +148,79 @@ export function saleEmailHtml(opts: { leadName: string; phone: string; forAdmin?
 </html>`;
 }
 
+export function collectionPlanEmailHtml(opts: {
+  debtorName: string;
+  installmentsCount: number;
+  amountPerInstallment: string;
+  totalAmount: string;
+  firstDueDate: string;
+  payLink?: string;
+  bankInfo?: string;
+  forAdmin?: boolean;
+}): string {
+  const title = opts.forAdmin ? 'Nuevo plan de cobranza registrado' : 'Tu plan de pago ha sido confirmado';
+  const greeting = opts.forAdmin
+    ? `<p>Se ha creado un plan de pago para <strong>${opts.debtorName}</strong>.</p>`
+    : `<p>Hola <strong>${opts.debtorName}</strong>, tu plan de pago ha sido registrado exitosamente.</p>`;
+  return `<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; background: #f9fafb; padding: 24px; color: #111;">
+  <div style="max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+    <div style="text-align:center; margin-bottom: 24px;">
+      <span style="font-size: 36px;">💳</span>
+      <h2 style="margin: 8px 0; color: #6366f1;">${title}</h2>
+    </div>
+    ${greeting}
+    <div style="background: #f0f0ff; border-radius: 8px; padding: 16px; margin: 16px 0;">
+      <p style="margin: 4px 0;"><strong>💰 Total:</strong> $${opts.totalAmount}</p>
+      <p style="margin: 4px 0;"><strong>📅 Cuotas:</strong> ${opts.installmentsCount} × $${opts.amountPerInstallment}</p>
+      <p style="margin: 4px 0;"><strong>🗓️ Primera cuota:</strong> ${opts.firstDueDate}</p>
+      ${opts.payLink ? `<p style="margin: 4px 0;"><strong>🔗 Link de pago:</strong> <a href="${opts.payLink}">${opts.payLink}</a></p>` : ''}
+      ${opts.bankInfo ? `<p style="margin: 4px 0;"><strong>🏦 Transferencia:</strong> ${opts.bankInfo}</p>` : ''}
+    </div>
+    <p style="color: #666; font-size: 13px; margin-top: 24px;">Recibirás recordatorios automáticos antes de cada vencimiento. · Enviado por Sellia</p>
+  </div>
+</body>
+</html>`;
+}
+
+export function collectionReminderEmailHtml(opts: {
+  debtorName: string;
+  installmentNum: number;
+  amount: string;
+  dueDate: string;
+  msgType: string;
+  payLink?: string;
+  bankInfo?: string;
+}): string {
+  const titles: Record<string, string> = {
+    reminder_5d: '📅 Recordatorio de pago — faltan 5 días',
+    due_day: '⚠️ Tu cuota vence hoy',
+    late_3d: '🔔 Cuota vencida — 3 días de atraso',
+    late_7d: '❗ Cuota vencida — 7 días de atraso',
+    late_15d: '🚨 Cuota vencida — 15 días de atraso',
+  };
+  const title = titles[opts.msgType] || 'Recordatorio de pago';
+  return `<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; background: #f9fafb; padding: 24px; color: #111;">
+  <div style="max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+    <div style="text-align:center; margin-bottom: 24px;">
+      <h2 style="margin: 8px 0; color: #f59e0b;">${title}</h2>
+    </div>
+    <p>Hola <strong>${opts.debtorName}</strong>, te recordamos que tu cuota N°${opts.installmentNum} está pendiente.</p>
+    <div style="background: #fffbeb; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #f59e0b;">
+      <p style="margin: 4px 0;"><strong>💰 Monto:</strong> $${opts.amount}</p>
+      <p style="margin: 4px 0;"><strong>📅 Vencimiento:</strong> ${opts.dueDate}</p>
+      ${opts.payLink ? `<p style="margin: 4px 0;"><strong>🔗 Pagar online:</strong> <a href="${opts.payLink}">${opts.payLink}</a></p>` : ''}
+      ${opts.bankInfo ? `<p style="margin: 4px 0;"><strong>🏦 Transferencia:</strong> ${opts.bankInfo}</p>` : ''}
+    </div>
+    <p style="color: #666; font-size: 13px; margin-top: 24px;">Enviado por Sellia · Si ya realizaste el pago, ignora este mensaje.</p>
+  </div>
+</body>
+</html>`;
+}
+
 export function newLeadEmailHtml(opts: { leadName: string; phone: string; channel: string }): string {
   return `
 <!DOCTYPE html>

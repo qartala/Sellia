@@ -18,7 +18,11 @@ import {
   X,
   Calendar,
   Bot,
-  UserCheck
+  UserCheck,
+  DollarSign,
+  Clock,
+  AlertTriangle,
+  CalendarCheck,
 } from "lucide-react";
 import {
   AreaChart,
@@ -117,6 +121,8 @@ export default function Dashboard() {
   });
 
   const [recentLeads, setRecentLeads] = useState<any[]>([]);
+  const [collections, setCollections] = useState<any[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
 
   const [insights, setInsights] = useState({
     demographics: "Cargando datos...",
@@ -162,10 +168,14 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [dashData, leadsData, autoData] = await Promise.all([
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const [dashData, leadsData, autoData, collectionsData, calData] = await Promise.all([
         api.getDashboardStats(),
         api.getLeads(),
         api.getAutomations(),
+        api.getCollections().catch(() => []),
+        api.getCalendarEvents({ month }).catch(() => []),
       ]);
       setStats(dashData.stats);
       setRecentLeads(dashData.recentLeads || []);
@@ -174,6 +184,8 @@ export default function Dashboard() {
       if (dashData.channelData) setChannelChartData(dashData.channelData);
       setLeads(leadsData);
       setAllAutomations(autoData);
+      setCollections(collectionsData);
+      setCalendarEvents(calData);
     } catch (err) {
       console.error('Error loading dashboard:', err);
     } finally {
@@ -341,6 +353,142 @@ export default function Dashboard() {
           darkMode={darkMode}
         />
       </div>
+
+      {/* ── Cobranza + Calendario ─────────────────────────────────────────── */}
+      {(() => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Collections derived stats
+        const activePlans = collections.filter(p => p.status === 'active').length;
+        const allInstallments = collections.flatMap(p => p.installments || []);
+        const pending = allInstallments.filter(i => i.status === 'pending').length;
+        const overdue = allInstallments.filter(i => i.status === 'overdue').length;
+        const nextInstallment = allInstallments
+          .filter(i => i.status === 'pending' && i.due_date)
+          .sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime())[0];
+
+        // Calendar derived stats
+        const upcoming = calendarEvents.filter(e => {
+          const d = new Date(e.start_datetime);
+          d.setHours(0, 0, 0, 0);
+          return d >= today;
+        }).sort((a, b) => new Date(a.start_datetime).getTime() - new Date(b.start_datetime).getTime());
+        const todayEvents = upcoming.filter(e => {
+          const d = new Date(e.start_datetime);
+          d.setHours(0, 0, 0, 0);
+          return d.getTime() === today.getTime();
+        });
+        const nextEvent = upcoming[0];
+
+        const card = cn("p-5 rounded-xl border shadow-sm", darkMode ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200");
+        const labelCls = cn("text-xs font-medium", darkMode ? "text-slate-400" : "text-slate-500");
+        const valueCls = cn("text-xl font-bold mt-0.5", darkMode ? "text-white" : "text-slate-900");
+        const subCls = cn("text-xs mt-1", darkMode ? "text-slate-500" : "text-slate-400");
+
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* ── Cobranza card ── */}
+            <div className={card}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", darkMode ? "bg-amber-500/15 text-amber-400" : "bg-amber-50 text-amber-600")}>
+                    <DollarSign className="w-4 h-4" />
+                  </div>
+                  <span className={cn("font-semibold text-sm", darkMode ? "text-white" : "text-slate-900")}>Cobranza</span>
+                </div>
+                <button onClick={() => window.location.href = '/collections'} className={cn("text-xs font-medium hover:underline", darkMode ? "text-indigo-400" : "text-indigo-600")}>
+                  Ver planes →
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>Planes activos</p>
+                  <p className={valueCls}>{activePlans}</p>
+                </div>
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>Cuotas pendientes</p>
+                  <p className={cn("text-xl font-bold mt-0.5", pending > 0 ? "text-amber-500" : darkMode ? "text-white" : "text-slate-900")}>{pending}</p>
+                </div>
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>En mora</p>
+                  <p className={cn("text-xl font-bold mt-0.5", overdue > 0 ? "text-rose-500" : darkMode ? "text-white" : "text-slate-900")}>{overdue}</p>
+                </div>
+              </div>
+
+              {overdue > 0 && (
+                <div className={cn("flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium", darkMode ? "bg-rose-900/30 text-rose-300 border border-rose-800" : "bg-rose-50 text-rose-700 border border-rose-100")}>
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {overdue} cuota{overdue > 1 ? 's' : ''} vencida{overdue > 1 ? 's' : ''} — revisar y gestionar cobro
+                </div>
+              )}
+              {!overdue && nextInstallment && (
+                <div className={cn("flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium", darkMode ? "bg-amber-900/20 text-amber-300 border border-amber-800/40" : "bg-amber-50 text-amber-700 border border-amber-100")}>
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  Próxima cuota: {new Date(nextInstallment.due_date).toLocaleDateString('es-CL')} — ${Number(nextInstallment.amount).toLocaleString('es-CL')}
+                </div>
+              )}
+              {!overdue && !nextInstallment && activePlans === 0 && (
+                <p className={cn("text-xs text-center py-2", darkMode ? "text-slate-500" : "text-slate-400")}>Sin planes activos. Crea uno en Cobranza.</p>
+              )}
+              {!overdue && !nextInstallment && activePlans > 0 && (
+                <div className={cn("flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium", darkMode ? "bg-emerald-900/20 text-emerald-300 border border-emerald-800/40" : "bg-emerald-50 text-emerald-700 border border-emerald-100")}>
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  Todo al día — sin cuotas pendientes
+                </div>
+              )}
+            </div>
+
+            {/* ── Calendario card ── */}
+            <div className={card}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", darkMode ? "bg-indigo-500/15 text-indigo-400" : "bg-indigo-50 text-indigo-600")}>
+                    <CalendarCheck className="w-4 h-4" />
+                  </div>
+                  <span className={cn("font-semibold text-sm", darkMode ? "text-white" : "text-slate-900")}>Calendario</span>
+                </div>
+                <button onClick={() => window.location.href = '/calendar'} className={cn("text-xs font-medium hover:underline", darkMode ? "text-indigo-400" : "text-indigo-600")}>
+                  Ver agenda →
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>Hoy</p>
+                  <p className={cn("text-xl font-bold mt-0.5", todayEvents.length > 0 ? "text-indigo-500" : darkMode ? "text-white" : "text-slate-900")}>{todayEvents.length}</p>
+                  <p className={subCls}>cita{todayEvents.length !== 1 ? 's' : ''}</p>
+                </div>
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>Este mes</p>
+                  <p className={valueCls}>{upcoming.length}</p>
+                  <p className={subCls}>próximas</p>
+                </div>
+                <div className={cn("rounded-lg p-3", darkMode ? "bg-slate-800" : "bg-slate-50")}>
+                  <p className={labelCls}>Total mes</p>
+                  <p className={valueCls}>{calendarEvents.length}</p>
+                  <p className={subCls}>agendadas</p>
+                </div>
+              </div>
+
+              {nextEvent ? (
+                <div className={cn("flex items-start gap-2.5 px-3 py-2.5 rounded-lg", darkMode ? "bg-indigo-900/20 border border-indigo-800/40" : "bg-indigo-50 border border-indigo-100")}>
+                  <CalendarCheck className={cn("w-3.5 h-3.5 mt-0.5 shrink-0", darkMode ? "text-indigo-400" : "text-indigo-600")} />
+                  <div>
+                    <p className={cn("text-xs font-semibold", darkMode ? "text-indigo-200" : "text-indigo-800")}>{nextEvent.title}</p>
+                    <p className={cn("text-xs mt-0.5", darkMode ? "text-indigo-400" : "text-indigo-600")}>
+                      {new Date(nextEvent.start_datetime).toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'short' })} · {new Date(nextEvent.start_datetime).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className={cn("text-xs text-center py-2", darkMode ? "text-slate-500" : "text-slate-400")}>Sin citas próximas este mes</p>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Area Chart */}

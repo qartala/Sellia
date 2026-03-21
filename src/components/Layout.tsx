@@ -186,13 +186,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <div className={cn("w-64 border-r flex flex-col transition-colors duration-300 shrink-0", dm ? "bg-slate-900 border-slate-800" : "bg-white border-slate-200")}>
 
         {/* Logo */}
-        <div className={cn("h-20 flex items-center px-6 border-b shrink-0", dm ? "border-slate-800" : "border-slate-200")}>
-          <Link to="/" className="flex items-center gap-3 group overflow-hidden">
-            <img src={logoUrl} alt="Logo" className="h-14 w-auto object-contain transition-transform group-hover:scale-105 shrink-0" />
-            <span className={cn("font-bold text-[17px] tracking-wide truncate", dm ? "text-white" : "text-slate-900")} title={user?.company || 'Mi Empresa'}>
-              {user?.company || 'Mi Empresa'}
-            </span>
+        <div className={cn("flex flex-col items-start px-5 py-3 border-b shrink-0 gap-1", dm ? "border-slate-800" : "border-slate-200")}>
+          <Link to="/" className="group">
+            <img src={logoUrl} alt="Logo" className="h-10 w-auto object-contain transition-transform group-hover:scale-105" />
           </Link>
+          <span className={cn("font-bold text-sm leading-tight w-full", dm ? "text-white" : "text-slate-900")} title={user?.company || 'Mi Empresa'}>
+            {user?.company || 'Mi Empresa'}
+          </span>
         </div>
 
         {/* Nav */}

@@ -50,17 +50,22 @@ export default function Chats() {
 
   const [knowledgeBase, setKnowledgeBase] = useState(initialKnowledge);
   const [chats, setChats] = useState<any[]>([]);
+  // Messages are stored separately to prevent sidebar re-renders on every message poll
+  const [chatMessages, setChatMessages] = useState<Record<number, any[]>>({});
 
   const [isTraining, setIsTraining] = useState(false);
   const [saved, setSaved] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string, size: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [activeChatId, setActiveChatId] = useState(chats[0]?.id || null);
+  const [activeChatId, setActiveChatId] = useState<number | null>(chats[0]?.id || null);
   const activeChat = chats.find((c: any) => c.id === activeChatId) || chats[0] || null;
+  const activeMessages = activeChatId ? (chatMessages[activeChatId] || []) : [];
 
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [simMode, setSimMode] = useState(false);
+  const [simInput, setSimInput] = useState("");
   const [isUpdatingAudience, setIsUpdatingAudience] = useState(false);
   const [saleToast, setSaleToast] = useState<string | null>(null);
 
@@ -104,10 +109,8 @@ export default function Chats() {
   }, []);
 
   useEffect(() => {
-    if (activeChat?.messages) {
-      scrollToBottom();
-    }
-  }, [activeChat?.messages]);
+    scrollToBottom();
+  }, [activeMessages]);
 
   // Load data from backend API
   useEffect(() => {
@@ -118,7 +121,15 @@ export default function Chats() {
           api.getKnowledge(),
           api.getAgentName()
         ]);
-        setChats(leadsData);
+        // Store messages separately; strip from lead metadata to avoid re-renders
+        const msgsMap: Record<number, any[]> = {};
+        const leadsOnly = leadsData.map((lead: any) => {
+          msgsMap[lead.id] = lead.messages || [];
+          const { messages: _msgs, ...rest } = lead;
+          return rest;
+        });
+        setChats(leadsOnly);
+        setChatMessages(msgsMap);
         if (leadsData.length > 0) setActiveChatId(leadsData[0].id);
         if (kbData?.content) setKnowledgeBase(kbData.content);
         if (agentData?.agentName) setAgentName(agentData.agentName);
@@ -129,31 +140,41 @@ export default function Chats() {
     loadData();
   }, []);
 
-  // Poll messages for the active chat every 3s (picks up WhatsApp messages in real time)
+  // Poll messages for the active chat every 3s — only updates chatMessages, never touches chats (sidebar stays stable)
   useEffect(() => {
     if (!activeChatId) return;
     const poll = setInterval(async () => {
       try {
         const msgs = await api.getMessages(activeChatId);
-        setChats(prev => prev.map(c =>
-          c.id === activeChatId ? { ...c, messages: msgs } : c
-        ));
+        setChatMessages(prev => {
+          const existing = prev[activeChatId];
+          if (existing && JSON.stringify(existing) === JSON.stringify(msgs)) return prev;
+          return { ...prev, [activeChatId]: msgs };
+        });
       } catch {}
     }, 3000);
     return () => clearInterval(poll);
   }, [activeChatId]);
 
-  // Poll leads list every 15s to pick up new leads from WhatsApp
+  // Poll leads list every 15s — only updates metadata (name/status/score/email), never messages
   useEffect(() => {
     const poll = setInterval(async () => {
       try {
         const leadsData = await api.getLeads();
         setChats(prev => {
+          let changed = false;
           const merged = leadsData.map((lead: any) => {
+            const { messages: _msgs, ...meta } = lead;
             const existing = prev.find((c: any) => c.id === lead.id);
-            // Keep local messages if we already have them (message poll handles updates)
-            return existing ? { ...lead, messages: existing.messages, insights: existing.insights } : lead;
+            if (!existing) { changed = true; return meta; }
+            if (existing.status !== meta.status || existing.name !== meta.name ||
+                existing.score !== meta.score || existing.email !== meta.email) {
+              changed = true;
+              return { ...existing, ...meta };
+            }
+            return existing;
           });
+          if (!changed && merged.length === prev.length) return prev;
           return merged;
         });
       } catch {}
@@ -193,17 +214,25 @@ export default function Chats() {
   };
 
   const updateActiveChat = async (updates: any) => {
-    setChats(chats.map((c: any) => c.id === activeChatId ? { ...c, ...updates } : c));
+    // Route message updates to chatMessages (isolated — doesn't trigger sidebar re-render)
+    if (updates.messages !== undefined) {
+      setChatMessages(prev => ({ ...prev, [activeChatId!]: updates.messages }));
+    }
+    // Route metadata updates to chats (no messages key)
+    const { messages: _msgs, ...metaUpdates } = updates;
+    if (Object.keys(metaUpdates).length > 0) {
+      setChats(prev => prev.map((c: any) => c.id === activeChatId ? { ...c, ...metaUpdates } : c));
+    }
     try {
       if (
-        updates.status ||
-        updates.score !== undefined ||
-        updates.humanMode !== undefined ||
-        updates.tags ||
-        updates.name ||
-        updates.company
+        metaUpdates.status ||
+        metaUpdates.score !== undefined ||
+        metaUpdates.humanMode !== undefined ||
+        metaUpdates.tags ||
+        metaUpdates.name ||
+        metaUpdates.company
       ) {
-        await api.updateLead(activeChatId!, updates);
+        await api.updateLead(activeChatId!, metaUpdates);
       }
     } catch (err) {
       console.error('Error updating lead:', err);
@@ -302,7 +331,9 @@ export default function Chats() {
         messages: []
       });
 
-      setChats([newChat, ...chats]);
+      const { messages: _msgs, ...newMeta } = newChat;
+      setChatMessages(prev => ({ ...prev, [newChat.id]: [] }));
+      setChats(prev => [newMeta, ...prev]);
       setActiveChatId(newChat.id);
 
       await api.createNotification({
@@ -320,6 +351,7 @@ export default function Chats() {
       await api.deleteLead(id);
       const updatedChats = chats.filter((c: any) => c.id !== id);
       setChats(updatedChats);
+      setChatMessages(prev => { const next = { ...prev }; delete next[id]; return next; });
       if (activeChatId === id) {
         setActiveChatId(updatedChats[0]?.id || null);
       }
@@ -339,7 +371,7 @@ export default function Chats() {
     const randomReply = replies[Math.floor(Math.random() * replies.length)];
 
     const userMsg = { role: 'user', content: randomReply };
-    const newMessages = [...activeChat.messages, userMsg];
+    const newMessages = [...activeMessages, userMsg];
     updateActiveChat({ messages: newMessages });
 
     // Persist simulated user message to backend
@@ -388,7 +420,8 @@ export default function Chats() {
         setIsTyping(false);
         const aiMsg = { role: 'assistant', content: parts[i] };
         updatedMessages = [...updatedMessages, aiMsg];
-        updateActiveChat({ messages: [...updatedMessages] });
+        // Update only messages state — does NOT touch chats array → sidebar stays stable
+        setChatMessages(prev => ({ ...prev, [activeChatId!]: [...updatedMessages] }));
       }
 
       let statusUpdates: any = {};
@@ -412,7 +445,28 @@ export default function Chats() {
     } catch (error) {
       console.error("Error generating response:", error);
       setIsTyping(false);
-      updateActiveChat({ messages: [...currentMessages, { role: 'assistant', content: "Hubo un error de conexión con el agente." }] });
+      setChatMessages(prev => ({ ...prev, [activeChatId!]: [...currentMessages, { role: 'assistant', content: "Hubo un error de conexión con el agente." }] }));
+    }
+  };
+
+  const handleSimSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!simInput.trim() || !activeChat) return;
+    const content = simInput;
+    setSimInput("");
+
+    const userMsg = { role: 'user', content };
+    const newMessages = [...activeMessages, userMsg];
+    setChatMessages(prev => ({ ...prev, [activeChatId!]: newMessages }));
+
+    try {
+      await api.addMessage(activeChatId!, { role: 'user', content });
+    } catch (err) {
+      console.error('Error saving sim message:', err);
+    }
+
+    if (!activeChat.humanMode) {
+      setTimeout(() => triggerAIResponse(newMessages), 500);
     }
   };
 
@@ -425,8 +479,8 @@ export default function Chats() {
 
     // Always send as operator to WhatsApp (and save to DB)
     const newMsg = { role: 'assistant', content, source: 'human' };
-    const newMessages = [...activeChat.messages, newMsg];
-    updateActiveChat({ messages: newMessages });
+    const newMessages = [...activeMessages, newMsg];
+    setChatMessages(prev => ({ ...prev, [activeChatId!]: newMessages }));
 
     try {
       await api.sendWhatsappOperatorMessage(activeChatId!, content);
@@ -655,7 +709,7 @@ export default function Chats() {
                 </div>
                 <p className={cn("text-xs mb-2", darkMode ? "text-slate-400" : "text-slate-500")}>{chat.company} • {chat.channel}</p>
                 <p className={cn("text-sm truncate", darkMode ? "text-slate-300" : "text-slate-600")}>
-                  {chat.messages[chat.messages.length - 1]?.content || "..."}
+                  {(chatMessages[chat.id] ?? []).at(-1)?.content || "..."}
                 </p>
               </div>
             )))}
@@ -687,14 +741,16 @@ export default function Chats() {
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={simulateLeadReply}
+              onClick={() => setSimMode(!simMode)}
               className={cn(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors",
-                darkMode ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/20" : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                simMode
+                  ? darkMode ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : "bg-amber-50 text-amber-700 border-amber-200"
+                  : darkMode ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/20" : "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
               )}
-              title="Simular que el lead responde"
+              title={simMode ? "Salir del modo simulación" : "Simular como el lead"}
             >
-              <MessageCircle className="w-4 h-4" /> Simular Lead
+              <MessageCircle className="w-4 h-4" /> {simMode ? "Salir Simulación" : "Simular Lead"}
             </button>
             <button
               onClick={toggleHumanMode}
@@ -726,7 +782,7 @@ export default function Chats() {
 
         {/* Messages Area */}
         <div className={cn("flex-1 overflow-y-auto p-6 space-y-4", darkMode ? "bg-slate-950/40" : "bg-slate-50/50")}>
-          {activeChat.messages.map((msg: any, idx: number) => {
+          {activeMessages.map((msg: any, idx: number) => {
             const isHuman = msg.source === 'human';
             const isUser = msg.role === 'user';
             const isSystem = msg.role === 'system';
@@ -787,6 +843,35 @@ export default function Chats() {
             <div className={cn("flex items-center justify-center gap-3 py-3 px-4 rounded-xl border font-medium text-sm", darkMode ? "bg-rose-500/10 border-rose-500/20 text-rose-300" : "bg-rose-50 border-rose-200 text-rose-700")}>
               <X className="w-5 h-5 shrink-0" />
               Esta conversación fue cerrada como perdida.
+            </div>
+          ) : simMode ? (
+            <div>
+              <div className={cn("mb-2 flex items-center gap-2 text-xs font-semibold px-3 py-2 rounded-lg border", darkMode ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : "bg-amber-50 text-amber-700 border-amber-200")}>
+                <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                Modo Simulación: estás escribiendo como el lead
+              </div>
+              <form onSubmit={handleSimSubmit} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={simInput}
+                  onChange={(e) => setSimInput(e.target.value)}
+                  placeholder="Escribe como el cliente lead..."
+                  autoFocus
+                  className={cn(
+                    "flex-1 px-4 py-2.5 border rounded-xl text-sm transition-all outline-none",
+                    darkMode
+                      ? "bg-amber-500/5 border-amber-500/30 text-slate-200 placeholder:text-amber-600 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20"
+                      : "bg-amber-50 border-amber-200 text-amber-900 placeholder:text-amber-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
+                  )}
+                />
+                <button
+                  type="submit"
+                  disabled={!simInput.trim() || isTyping}
+                  className="p-2.5 text-white rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm bg-amber-500 hover:bg-amber-600"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </form>
             </div>
           ) : (
             <form onSubmit={handleSendMessage} className="flex items-center gap-2">

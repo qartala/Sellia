@@ -458,6 +458,10 @@ class ApiClient {
     return this.request<{ success: boolean }>('PUT', '/admin/sellia-kb', { content, agentName });
   }
 
+  async adminCollectionPreview(data: { userId?: number; debtorName: string; installNum: number; amount: string; dueDate: string; payLink?: string; bankInfo?: string; msgType: string; isSellia?: boolean }) {
+    return this.request<{ message: string }>('POST', '/admin/collection-preview', data);
+  }
+
   async adminGetUserCollectionPrompt(userId: number) {
     return this.request<{ collection_prompt: string }>('GET', `/admin/users/${userId}/collection-prompt`);
   }
@@ -521,6 +525,7 @@ class ApiClient {
   async markInstallmentPaid(id: number) { return this.request<any>('PUT', `/collections/installments/${id}/pay`); }
   async markInstallmentUnpaid(id: number) { return this.request<any>('PUT', `/collections/installments/${id}/unpay`); }
   async runCollectionScheduler() { return this.request<any>('POST', '/collections/run-scheduler'); }
+  async clearCollectionMessages(id: number) { return this.request<any>('DELETE', `/collections/${id}/messages`); }
   async getAllCollections() { return this.request<any[]>('GET', '/collections/all'); }
   async getCollectionConfig() { return this.request<{ collection_prompt: string }>('GET', '/collections/config'); }
   async updateCollectionConfig(collection_prompt: string) { return this.request<any>('PUT', '/collections/config', { collection_prompt }); }

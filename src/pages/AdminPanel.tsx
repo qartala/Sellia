@@ -6,7 +6,8 @@ import {
   BrainCircuit, KeyRound, CheckCircle2, AlertTriangle, Save, Sun, Moon,
   Bot, Send, BookOpen, Lightbulb, TrendingDown, Star, Zap, CheckCheck,
   BookMarked, Activity, Calendar as CalendarIcon, ChevronLeft, ChevronRight,
-  Bell, Smartphone, History, UserCog, FileText, FileSpreadsheet, Link2
+  Bell, Smartphone, History, UserCog, FileText, FileSpreadsheet, Link2, MessageCircle,
+  Pause, Play
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/AuthContext";
@@ -321,6 +322,26 @@ export default function AdminPanel() {
   const [kbCollectionTab, setKbCollectionTab] = useState<'ventas' | 'cobranza'>('ventas');
   const [kbCollectionPrompt, setKbCollectionPrompt] = useState('');
   const [kbCollectionSaving, setKbCollectionSaving] = useState(false);
+  // Collection simulator — per-client (KB & Simulador section)
+  const [colSimDebtorName, setColSimDebtorName] = useState('');
+  const [colSimInstallNum, setColSimInstallNum] = useState('1');
+  const [colSimAmount, setColSimAmount] = useState('');
+  const [colSimDueDate, setColSimDueDate] = useState('');
+  const [colSimPayLink, setColSimPayLink] = useState('');
+  const [colSimBankInfo, setColSimBankInfo] = useState('');
+  const [colSimMsgType, setColSimMsgType] = useState('reminder_5d');
+  const [colSimGenerating, setColSimGenerating] = useState(false);
+  const [colSimResult, setColSimResult] = useState('');
+  // Collection simulator — Sellia (Chats de Sellia section, separate state)
+  const [selliaColSimDebtorName, setSelliaColSimDebtorName] = useState('');
+  const [selliaColSimInstallNum, setSelliaColSimInstallNum] = useState('1');
+  const [selliaColSimAmount, setSelliaColSimAmount] = useState('');
+  const [selliaColSimDueDate, setSelliaColSimDueDate] = useState('');
+  const [selliaColSimPayLink, setSelliaColSimPayLink] = useState('');
+  const [selliaColSimBankInfo, setSelliaColSimBankInfo] = useState('');
+  const [selliaColSimMsgType, setSelliaColSimMsgType] = useState('reminder_5d');
+  const [selliaColSimGenerating, setSelliaColSimGenerating] = useState(false);
+  const [selliaColSimResult, setSelliaColSimResult] = useState('');
 
   // ── Growth Analyzer ──────────────────────────────────────────────────────
   const [growthUserId, setGrowthUserId] = useState<number | null>(null);
@@ -342,6 +363,11 @@ export default function AdminPanel() {
   const [selliaSending, setSelliaSending] = useState(false);
   const [selliaAiTyping, setSelliaAiTyping] = useState(false);
   const [selliaHumanMode, setSelliaHumanMode] = useState(false);
+  const [selliaSimMode, setSelliaSimMode] = useState(false);
+  const [selliaSimInput, setSelliaSimInput] = useState('');
+  const [selliaColPlanModal, setSelliaColPlanModal] = useState(false);
+  const [selliaColPlanForm, setSelliaColPlanForm] = useState({ totalAmount: '', installmentsCount: '2', startDate: '', notes: '' });
+  const [selliaColPlanSaving, setSelliaColPlanSaving] = useState(false);
   const [selliaKb, setSelliaKb] = useState('');
   const [selliaAgentName, setSelliaAgentName] = useState('Sellia');
   const [selliaKbSaving, setSelliaKbSaving] = useState(false);
@@ -417,6 +443,10 @@ export default function AdminPanel() {
   const [adminCollections, setAdminCollections] = useState<any[]>([]);
   const [adminCollectionsLoading, setAdminCollectionsLoading] = useState(false);
   const [adminSchedulerRunning, setAdminSchedulerRunning] = useState(false);
+  const [expandedPlanId, setExpandedPlanId] = useState<number | null>(null);
+  const [editingPlan, setEditingPlan] = useState<any | null>(null);
+  const [editPlanForm, setEditPlanForm] = useState({ name: '', debtorPhone: '', paymentLink: '', bankInfo: '', notes: '' });
+  const [planActionLoading, setPlanActionLoading] = useState<number | null>(null);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpTesting, setSmtpTesting] = useState(false);
   const [smtpToast, setSmtpToast] = useState<{ msg: string; ok: boolean } | null>(null);
@@ -683,6 +713,48 @@ export default function AdminPanel() {
       setTimeout(() => setSelliaWaToast(null), 4000);
     }
     setSelliaWaSaving(false);
+  };
+
+  const fmtDate = (d: string | null) => d ? new Date(d + 'T00:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+
+  const refreshAdminCollections = () =>
+    api.getAllCollections().then(setAdminCollections).catch(() => {});
+
+  const togglePausePlan = async (plan: any) => {
+    setPlanActionLoading(plan.id);
+    try { await api.updateCollection(plan.id, { status: plan.status === 'active' ? 'paused' : 'active' }); refreshAdminCollections(); } catch {}
+    setPlanActionLoading(null);
+  };
+
+  const deletePlan = async (plan: any) => {
+    if (!window.confirm(`¿Eliminar el plan "${plan.name}"? Esta acción no se puede deshacer.`)) return;
+    setPlanActionLoading(plan.id);
+    try { await api.deleteCollection(plan.id); setAdminCollections(p => p.filter(x => x.id !== plan.id)); } catch {}
+    setPlanActionLoading(null);
+  };
+
+  const openEditPlan = (plan: any) => {
+    setEditingPlan(plan);
+    setEditPlanForm({ name: plan.name, debtorPhone: plan.debtor_phone || '', paymentLink: plan.payment_link || '', bankInfo: plan.bank_info || '', notes: plan.notes || '' });
+  };
+
+  const saveEditPlan = async () => {
+    if (!editingPlan) return;
+    setPlanActionLoading(editingPlan.id);
+    try {
+      await api.updateCollection(editingPlan.id, { name: editPlanForm.name, debtorPhone: editPlanForm.debtorPhone, paymentLink: editPlanForm.paymentLink, bankInfo: editPlanForm.bankInfo, notes: editPlanForm.notes });
+      setEditingPlan(null);
+      refreshAdminCollections();
+    } catch {}
+    setPlanActionLoading(null);
+  };
+
+  const toggleInstallmentPaid = async (inst: any) => {
+    try {
+      if (inst.status === 'paid') await api.markInstallmentUnpaid(inst.id);
+      else await api.markInstallmentPaid(inst.id);
+      refreshAdminCollections();
+    } catch {}
   };
 
   const saveSmtp = async () => {
@@ -979,6 +1051,8 @@ export default function AdminPanel() {
   const selectSelliaLead = async (lead: any) => {
     setSelliaLead(lead);
     setSelliaHumanMode(!!lead.human_mode);
+    setSelliaSimMode(false);
+    setSelliaSimInput('');
     setSelliaMessages([]);
     try {
       const msgs = await api.getMessages(lead.id);
@@ -1057,6 +1131,41 @@ export default function AdminPanel() {
     const next = !selliaHumanMode;
     setSelliaHumanMode(next);
     await api.updateLead(selliaLead.id, { human_mode: next ? 1 : 0 });
+  };
+
+  const createSelliaColPlan = async () => {
+    if (!selliaLead || !selliaColPlanForm.totalAmount || !selliaColPlanForm.startDate) return;
+    setSelliaColPlanSaving(true);
+    try {
+      await api.createCollection({
+        name: `Plan – ${selliaLead.name}`,
+        debtorName: selliaLead.name,
+        debtorPhone: selliaLead.phone_number || '',
+        leadId: selliaLead.id,
+        totalAmount: parseFloat(selliaColPlanForm.totalAmount.replace(/\./g, '').replace(',', '.')),
+        installmentsCount: parseInt(selliaColPlanForm.installmentsCount) || 2,
+        startDate: selliaColPlanForm.startDate,
+        notes: selliaColPlanForm.notes,
+      });
+      setSelliaColPlanModal(false);
+      setSelliaColPlanForm({ totalAmount: '', installmentsCount: '2', startDate: '', notes: '' });
+    } catch (err: any) {
+      alert('Error al crear plan: ' + err.message);
+    } finally {
+      setSelliaColPlanSaving(false);
+    }
+  };
+
+  const handleSelliaSimSubmit = async () => {
+    if (!selliaLead || !selliaSimInput.trim() || selliaAiTyping) return;
+    const content = selliaSimInput.trim();
+    setSelliaSimInput('');
+    const userMsg = { role: 'user', content, source: 'sim' };
+    setSelliaMessages(prev => [...prev, userMsg]);
+    try {
+      await api.addMessage(selliaLead.id, { role: 'user', content });
+    } catch { }
+    setTimeout(() => triggerSelliaAI([...selliaMessages, userMsg]), 300);
   };
 
   const statCards = [
@@ -1915,7 +2024,95 @@ export default function AdminPanel() {
                     </div>
                   </div>
 
-                  {/* ── Right: Simulator ── */}
+                  {/* ── Right: Collection Simulator (shown when Cobranza tab active) ── */}
+                  {kbCollectionTab === 'cobranza' ? (
+                    <div className={cn(card, "overflow-hidden flex flex-col")}>
+                      <div className={cn("px-5 py-3 border-b flex items-center gap-2", dm ? "border-slate-800" : T.border)}>
+                        <Bot className="w-4 h-4 text-amber-400" />
+                        <span className={cn("font-semibold text-sm", dm ? "text-white" : "text-slate-900")}>Simulador de Cobranza</span>
+                      </div>
+                      <div className="p-5 space-y-3 overflow-y-auto flex-1">
+                        {!kbUserId ? (
+                          <p className={cn("text-sm text-center py-8", dm ? "text-slate-500" : "text-slate-400")}>Selecciona un cliente arriba para simular.</p>
+                        ) : (
+                          <>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Nombre del deudor</label>
+                                <input value={colSimDebtorName} onChange={e => setColSimDebtorName(e.target.value)} placeholder="Ej: Juan Pérez" className={inputCls} />
+                              </div>
+                              <div>
+                                <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>N° de cuota</label>
+                                <input type="number" min="1" value={colSimInstallNum} onChange={e => setColSimInstallNum(e.target.value)} placeholder="1" className={inputCls} />
+                              </div>
+                              <div>
+                                <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Monto ($)</label>
+                                <input value={colSimAmount} onChange={e => setColSimAmount(e.target.value)} placeholder="150.000" className={inputCls} />
+                              </div>
+                              <div>
+                                <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Fecha de vencimiento</label>
+                                <input type="date" value={colSimDueDate} onChange={e => setColSimDueDate(e.target.value)} className={inputCls} />
+                              </div>
+                            </div>
+                            <div>
+                              <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Link de pago (opcional)</label>
+                              <input value={colSimPayLink} onChange={e => setColSimPayLink(e.target.value)} placeholder="https://..." className={inputCls} />
+                            </div>
+                            <div>
+                              <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Datos bancarios (opcional)</label>
+                              <input value={colSimBankInfo} onChange={e => setColSimBankInfo(e.target.value)} placeholder="Banco Estado / 12345678 / Juan Pérez" className={inputCls} />
+                            </div>
+                            <div>
+                              <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Tipo de mensaje</label>
+                              <select value={colSimMsgType} onChange={e => setColSimMsgType(e.target.value)} className={inputCls}>
+                                <option value="reminder_5d">📅 5 días antes del vencimiento</option>
+                                <option value="due_day">📅 Día de vencimiento</option>
+                                <option value="late_3d">⚠️ 3 días tarde</option>
+                                <option value="late_7d">🔴 7 días tarde</option>
+                                <option value="late_15d">🚨 15 días tarde</option>
+                              </select>
+                            </div>
+                            <button
+                              onClick={async () => {
+                                if (!colSimDebtorName || !colSimAmount || !colSimDueDate) return;
+                                setColSimGenerating(true);
+                                setColSimResult('');
+                                try {
+                                  const res = await api.adminCollectionPreview({
+                                    userId: kbUserId!,
+                                    debtorName: colSimDebtorName,
+                                    installNum: parseInt(colSimInstallNum) || 1,
+                                    amount: colSimAmount,
+                                    dueDate: colSimDueDate,
+                                    payLink: colSimPayLink,
+                                    bankInfo: colSimBankInfo,
+                                    msgType: colSimMsgType,
+                                  });
+                                  setColSimResult(res.message);
+                                } catch (err: any) {
+                                  setColSimResult('❌ ' + err.message);
+                                } finally {
+                                  setColSimGenerating(false); }
+                              }}
+                              disabled={colSimGenerating || !colSimDebtorName || !colSimAmount || !colSimDueDate}
+                              className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition-all"
+                            >
+                              {colSimGenerating ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generando...</> : <><Bot className="w-4 h-4" /> Generar mensaje</>}
+                            </button>
+                            {colSimResult && (
+                              <div className={cn("rounded-xl border p-4 text-sm whitespace-pre-wrap", dm ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-amber-50 border-amber-200 text-slate-800")}>
+                                <div className={cn("text-xs font-medium mb-2 flex items-center gap-1", dm ? "text-amber-400" : "text-amber-700")}>
+                                  <Bot className="w-3 h-3" /> Vista previa del mensaje WhatsApp
+                                </div>
+                                {colSimResult}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                  /* ── Right: Sales Simulator ── */
                   <div className={cn(card, "overflow-hidden flex flex-col")}>
                     <div className={cn("px-5 py-3 border-b flex items-center justify-between", dm ? "border-slate-800" : T.border)}>
                       <div className="flex items-center gap-2">
@@ -2040,6 +2237,7 @@ export default function AdminPanel() {
                       )}
                     </div>
                   </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2264,54 +2462,136 @@ export default function AdminPanel() {
 
                 {selliaSection === 'collection_prompt' ? (
                   /* ── Cobranza IA Editor for Sellia ── */
-                  <div className="p-6 space-y-4">
-                    <div className={cn("rounded-lg border p-3 text-xs", dm ? "bg-slate-800 border-slate-700 text-slate-400" : "bg-amber-50 border-amber-200 text-amber-800")}>
-                      Configura el prompt que la IA de Sellia usa para cobrar a sus propios clientes (dueños de negocio que usan la plataforma). Describe el tono y contexto de Sellia como empresa de SaaS.
+                  <div className="grid grid-cols-1 lg:grid-cols-2 divide-x divide-slate-200 dark:divide-slate-800">
+                    {/* Left: Prompt editor */}
+                    <div className="p-6 space-y-4">
+                      <div className={cn("rounded-lg border p-3 text-xs", dm ? "bg-slate-800 border-slate-700 text-slate-400" : "bg-amber-50 border-amber-200 text-amber-800")}>
+                        Configura el prompt que la IA de Sellia usa para cobrar a sus propios clientes. Describe el tono y contexto de Sellia como empresa SaaS.
+                      </div>
+                      <div>
+                        <label className={cn("block text-xs font-medium mb-1.5", dm ? "text-slate-400" : "text-slate-500")}>
+                          Prompt de Cobranza IA — Sellia
+                        </label>
+                        <textarea
+                          value={selliaCollectionPrompt}
+                          onChange={e => setSelliaCollectionPrompt(e.target.value)}
+                          rows={12}
+                          placeholder={`Somos Sellia, una plataforma SaaS de CRM e IA para WhatsApp.\n\nNuestros clientes son dueños de negocio que pagan mensualmente.\n\nEl tono debe ser profesional y amigable, recordando que somos sus socios tecnológicos.\n\nNunca amenazamos. Siempre ofrecemos coordinar una solución.`}
+                          className={cn(inputCls, "resize-none font-mono text-xs")}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <p className={cn("text-xs", dm ? "text-slate-500" : "text-slate-500")}>{selliaCollectionPrompt.length} caracteres</p>
+                        <button
+                          onClick={async () => {
+                            setSelliaCollectionSaving(true);
+                            try {
+                              await api.adminUpdateSelliaCollectionPrompt(selliaCollectionPrompt);
+                              setSelliaCollectionToast({ msg: 'Prompt de cobranza de Sellia guardado.', ok: true });
+                            } catch (err: any) {
+                              setSelliaCollectionToast({ msg: err.message, ok: false });
+                            } finally {
+                              setSelliaCollectionSaving(false);
+                              setTimeout(() => setSelliaCollectionToast(null), 3500);
+                            }
+                          }}
+                          disabled={selliaCollectionSaving}
+                          className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                        >
+                          {selliaCollectionSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                          Guardar Prompt
+                        </button>
+                      </div>
+                      {selliaCollectionToast && (
+                        <div className={cn("px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 border",
+                          selliaCollectionToast.ok
+                            ? dm ? "bg-emerald-900 border-emerald-700 text-emerald-200" : "bg-emerald-50 border-emerald-200 text-emerald-700"
+                            : dm ? "bg-rose-900 border-rose-700 text-rose-200" : "bg-rose-50 border-rose-200 text-rose-700"
+                        )}>
+                          {selliaCollectionToast.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                          {selliaCollectionToast.msg}
+                        </div>
+                      )}
                     </div>
-                    <div>
-                      <label className={cn("block text-xs font-medium mb-1.5", dm ? "text-slate-400" : "text-slate-500")}>
-                        Prompt de Cobranza IA — Sellia
-                      </label>
-                      <textarea
-                        value={selliaCollectionPrompt}
-                        onChange={e => setSelliaCollectionPrompt(e.target.value)}
-                        rows={12}
-                        placeholder={`Somos Sellia, una plataforma SaaS de CRM e IA para WhatsApp.\n\nNuestros clientes son dueños de negocio que pagan por el servicio mensualmente.\n\nEl tono debe ser profesional y amigable, recordando que somos sus socios tecnológicos.\n\nNunca amenazamos con acciones legales. Siempre ofrecemos coordinar una solución.`}
-                        className={cn(inputCls, "resize-none font-mono text-xs")}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <p className={cn("text-xs", dm ? "text-slate-500" : "text-slate-500")}>{selliaCollectionPrompt.length} caracteres</p>
+                    {/* Right: Collection Simulator */}
+                    <div className="p-6 space-y-3">
+                      <div className={cn("flex items-center gap-2 mb-1", dm ? "text-white" : "text-slate-900")}>
+                        <Bot className="w-4 h-4 text-amber-400" />
+                        <span className="font-semibold text-sm">Simulador de Cobranza</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Nombre del deudor</label>
+                          <input value={selliaColSimDebtorName} onChange={e => setSelliaColSimDebtorName(e.target.value)} placeholder="Ej: Juan Pérez" className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>N° de cuota</label>
+                          <input type="number" min="1" value={selliaColSimInstallNum} onChange={e => setSelliaColSimInstallNum(e.target.value)} placeholder="1" className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Monto ($)</label>
+                          <input value={selliaColSimAmount} onChange={e => setSelliaColSimAmount(e.target.value)} placeholder="150.000" className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Fecha de vencimiento</label>
+                          <input type="date" value={selliaColSimDueDate} onChange={e => setSelliaColSimDueDate(e.target.value)} className={inputCls} />
+                        </div>
+                      </div>
+                      <div>
+                        <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Link de pago (opcional)</label>
+                        <input value={selliaColSimPayLink} onChange={e => setSelliaColSimPayLink(e.target.value)} placeholder="https://..." className={inputCls} />
+                      </div>
+                      <div>
+                        <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Datos bancarios (opcional)</label>
+                        <input value={selliaColSimBankInfo} onChange={e => setSelliaColSimBankInfo(e.target.value)} placeholder="Banco / Cuenta / Titular" className={inputCls} />
+                      </div>
+                      <div>
+                        <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>Tipo de mensaje</label>
+                        <select value={selliaColSimMsgType} onChange={e => setSelliaColSimMsgType(e.target.value)} className={inputCls}>
+                          <option value="reminder_5d">📅 5 días antes del vencimiento</option>
+                          <option value="due_day">📅 Día de vencimiento</option>
+                          <option value="late_3d">⚠️ 3 días tarde</option>
+                          <option value="late_7d">🔴 7 días tarde</option>
+                          <option value="late_15d">🚨 15 días tarde</option>
+                        </select>
+                      </div>
                       <button
                         onClick={async () => {
-                          setSelliaCollectionSaving(true);
+                          if (!selliaColSimDebtorName || !selliaColSimAmount || !selliaColSimDueDate) return;
+                          setSelliaColSimGenerating(true);
+                          setSelliaColSimResult('');
                           try {
-                            await api.adminUpdateSelliaCollectionPrompt(selliaCollectionPrompt);
-                            setSelliaCollectionToast({ msg: 'Prompt de cobranza de Sellia guardado.', ok: true });
+                            const res = await api.adminCollectionPreview({
+                              debtorName: selliaColSimDebtorName,
+                              installNum: parseInt(selliaColSimInstallNum) || 1,
+                              amount: selliaColSimAmount,
+                              dueDate: selliaColSimDueDate,
+                              payLink: selliaColSimPayLink,
+                              bankInfo: selliaColSimBankInfo,
+                              msgType: selliaColSimMsgType,
+                              isSellia: true,
+                            });
+                            setSelliaColSimResult(res.message);
                           } catch (err: any) {
-                            setSelliaCollectionToast({ msg: err.message, ok: false });
+                            setSelliaColSimResult('❌ ' + err.message);
                           } finally {
-                            setSelliaCollectionSaving(false);
-                            setTimeout(() => setSelliaCollectionToast(null), 3500);
+                            setSelliaColSimGenerating(false);
                           }
                         }}
-                        disabled={selliaCollectionSaving}
-                        className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                        disabled={selliaColSimGenerating || !selliaColSimDebtorName || !selliaColSimAmount || !selliaColSimDueDate}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition-all"
                       >
-                        {selliaCollectionSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                        Guardar Prompt
+                        {selliaColSimGenerating ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generando...</> : <><Bot className="w-4 h-4" /> Generar mensaje</>}
                       </button>
+                      {selliaColSimResult && (
+                        <div className={cn("rounded-xl border p-4 text-sm whitespace-pre-wrap", dm ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-amber-50 border-amber-200 text-slate-800")}>
+                          <div className={cn("text-xs font-medium mb-2 flex items-center gap-1", dm ? "text-amber-400" : "text-amber-700")}>
+                            <Bot className="w-3 h-3" /> Vista previa del mensaje WhatsApp
+                          </div>
+                          {selliaColSimResult}
+                        </div>
+                      )}
                     </div>
-                    {selliaCollectionToast && (
-                      <div className={cn("px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 border",
-                        selliaCollectionToast.ok
-                          ? dm ? "bg-emerald-900 border-emerald-700 text-emerald-200" : "bg-emerald-50 border-emerald-200 text-emerald-700"
-                          : dm ? "bg-rose-900 border-rose-700 text-rose-200" : "bg-rose-50 border-rose-200 text-rose-700"
-                      )}>
-                        {selliaCollectionToast.ok ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                        {selliaCollectionToast.msg}
-                      </div>
-                    )}
                   </div>
                 ) : selliaSection === 'kb' ? (
                   /* ── KB Editor ── */
@@ -2520,7 +2800,7 @@ export default function AdminPanel() {
                         </div>
 
                         {/* ── Right: chat panel ── */}
-                        <div className="flex-1 flex flex-col min-w-0">
+                        <div className="flex-1 flex flex-col min-w-0 relative">
                           {!selliaLead ? (
                             <div className={cn("flex-1 flex flex-col items-center justify-center gap-3", dm ? "text-slate-500" : "text-slate-400")}>
                               <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center", dm ? "bg-slate-800" : "bg-slate-100")}>
@@ -2557,6 +2837,30 @@ export default function AdminPanel() {
                                   )}>
                                     {selliaLead.status || 'Nuevo'}
                                   </span>
+                                  <button
+                                    onClick={() => {
+                                      setSelliaColPlanForm({ totalAmount: '', installmentsCount: '2', startDate: new Date().toISOString().split('T')[0], notes: '' });
+                                      setSelliaColPlanModal(true);
+                                    }}
+                                    title="Crear plan de cobranza para este lead"
+                                    className={cn("flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors", dm ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20" : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100")}
+                                  >
+                                    <DollarSign className="w-3.5 h-3.5" />
+                                    Cobro
+                                  </button>
+                                  <button
+                                    onClick={() => { setSelliaSimMode(s => !s); setSelliaSimInput(''); }}
+                                    title={selliaSimMode ? 'Salir modo simulación' : 'Simular como cliente lead'}
+                                    className={cn(
+                                      "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                                      selliaSimMode
+                                        ? "bg-amber-500/15 border-amber-500/30 text-amber-400"
+                                        : dm ? "bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600" : "bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200"
+                                    )}
+                                  >
+                                    <MessageCircle className="w-3.5 h-3.5" />
+                                    {selliaSimMode ? 'Salir Sim.' : 'Simular Lead'}
+                                  </button>
                                   <button
                                     onClick={toggleSelliaHumanMode}
                                     title={selliaHumanMode ? 'Respondiendo tú — clic para activar IA' : 'IA activa — clic para responder tú'}
@@ -2689,8 +2993,37 @@ export default function AdminPanel() {
                                 <div ref={selliaMsgEndRef} />
                               </div>
 
-                              {/* Input area — only when human mode is ON */}
-                              {selliaHumanMode ? (
+                              {/* Input area — sim mode / human mode / IA */}
+                              {selliaSimMode ? (
+                                <div className={cn("px-3 py-2.5 border-t flex flex-col gap-2", dm ? "border-slate-800 bg-slate-900/80" : cn(T.border, "bg-amber-50/60"))}>
+                                  <div className={cn("flex items-center gap-1.5 text-xs font-semibold px-1", dm ? "text-amber-400" : "text-amber-600")}>
+                                    <MessageCircle className="w-3.5 h-3.5" />
+                                    Modo Simulación — estás escribiendo como el cliente lead
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={selliaSimInput}
+                                      onChange={e => setSelliaSimInput(e.target.value)}
+                                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSelliaSimSubmit(); } }}
+                                      placeholder="Escribe como el cliente lead..."
+                                      autoFocus
+                                      disabled={selliaAiTyping}
+                                      className={cn(
+                                        "flex-1 px-4 py-2.5 rounded-2xl text-sm outline-none border transition-colors",
+                                        dm ? "bg-amber-500/10 border-amber-500/30 text-white placeholder:text-amber-600 focus:border-amber-500" : "bg-amber-50 border-amber-200 text-amber-900 placeholder:text-amber-400 focus:border-amber-400"
+                                      )}
+                                    />
+                                    <button
+                                      onClick={handleSelliaSimSubmit}
+                                      disabled={!selliaSimInput.trim() || selliaAiTyping}
+                                      className="w-10 h-10 shrink-0 flex items-center justify-center rounded-full bg-amber-500 hover:bg-amber-400 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                                    >
+                                      {selliaAiTyping ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : selliaHumanMode ? (
                                 <div className={cn("px-3 py-2.5 border-t flex items-end gap-2", dm ? "border-slate-800 bg-slate-900/80" : cn(T.border, "bg-white"))}>
                                   <div className="flex-1">
                                     <input
@@ -2733,12 +3066,64 @@ export default function AdminPanel() {
                                 </div>
                               )}
 
+                              {/* Create collection plan modal */}
+                              {selliaColPlanModal && (
+                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 rounded-xl">
+                                  <div className={cn("w-80 rounded-xl shadow-xl border p-5 flex flex-col gap-4", dm ? "bg-slate-900 border-slate-700" : "bg-white border-slate-200")}>
+                                    <div className="flex items-center justify-between">
+                                      <h3 className={cn("font-bold text-sm flex items-center gap-2", dm ? "text-white" : "text-slate-900")}>
+                                        <DollarSign className="w-4 h-4 text-emerald-500" /> Crear Plan de Cobranza
+                                      </h3>
+                                      <button onClick={() => setSelliaColPlanModal(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+                                    </div>
+                                    <p className={cn("text-xs", dm ? "text-slate-400" : "text-slate-500")}>
+                                      Cliente: <strong>{selliaLead.name}</strong>{selliaLead.phone_number ? ` · ${selliaLead.phone_number}` : ''}
+                                    </p>
+                                    <div className="flex flex-col gap-3">
+                                      <div>
+                                        <label className={cn("text-xs font-medium mb-1 block", dm ? "text-slate-300" : "text-slate-700")}>Monto total ($)</label>
+                                        <input type="text" placeholder="ej: 300000" value={selliaColPlanForm.totalAmount}
+                                          onChange={e => setSelliaColPlanForm(f => ({ ...f, totalAmount: e.target.value }))}
+                                          className={cn("w-full px-3 py-2 rounded-lg border text-sm outline-none", dm ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900")} />
+                                      </div>
+                                      <div>
+                                        <label className={cn("text-xs font-medium mb-1 block", dm ? "text-slate-300" : "text-slate-700")}>Número de cuotas</label>
+                                        <input type="number" min="1" max="24" value={selliaColPlanForm.installmentsCount}
+                                          onChange={e => setSelliaColPlanForm(f => ({ ...f, installmentsCount: e.target.value }))}
+                                          className={cn("w-full px-3 py-2 rounded-lg border text-sm outline-none", dm ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900")} />
+                                      </div>
+                                      <div>
+                                        <label className={cn("text-xs font-medium mb-1 block", dm ? "text-slate-300" : "text-slate-700")}>Fecha primera cuota</label>
+                                        <input type="date" value={selliaColPlanForm.startDate}
+                                          onChange={e => setSelliaColPlanForm(f => ({ ...f, startDate: e.target.value }))}
+                                          className={cn("w-full px-3 py-2 rounded-lg border text-sm outline-none", dm ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900")} />
+                                      </div>
+                                      <div>
+                                        <label className={cn("text-xs font-medium mb-1 block", dm ? "text-slate-300" : "text-slate-700")}>Notas (opcional)</label>
+                                        <input type="text" placeholder="ej: Plan acordado por chat" value={selliaColPlanForm.notes}
+                                          onChange={e => setSelliaColPlanForm(f => ({ ...f, notes: e.target.value }))}
+                                          className={cn("w-full px-3 py-2 rounded-lg border text-sm outline-none", dm ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900")} />
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2 pt-1">
+                                      <button onClick={() => setSelliaColPlanModal(false)} className={cn("flex-1 py-2 rounded-lg text-xs font-medium border transition-colors", dm ? "border-slate-700 text-slate-400 hover:bg-slate-800" : "border-slate-200 text-slate-600 hover:bg-slate-50")}>Cancelar</button>
+                                      <button onClick={createSelliaColPlan} disabled={!selliaColPlanForm.totalAmount || !selliaColPlanForm.startDate || selliaColPlanSaving}
+                                        className="flex-1 py-2 rounded-lg text-xs font-medium bg-emerald-500 hover:bg-emerald-600 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                        {selliaColPlanSaving ? 'Creando...' : 'Crear Plan'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
                               {/* Status bar */}
                               <div className={cn("px-4 py-1 border-t flex items-center gap-2 text-[10px]", dm ? "border-slate-800 bg-slate-900/50 text-slate-600" : "border-slate-100 bg-slate-50/80 text-slate-400")}>
-                                <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", selliaHumanMode ? "bg-orange-400" : "bg-purple-400")} />
-                                {selliaHumanMode
-                                  ? "Modo operador activo — ✓ enviado  ✓✓ entregado  ✓✓ azul leído"
-                                  : "IA activa — la IA responde automáticamente los mensajes entrantes"}
+                                <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", selliaSimMode ? "bg-amber-400" : selliaHumanMode ? "bg-orange-400" : "bg-purple-400")} />
+                                {selliaSimMode
+                                  ? "Simulación activa — tus mensajes llegan como el cliente, la IA responde"
+                                  : selliaHumanMode
+                                    ? "Modo operador activo — ✓ enviado  ✓✓ entregado  ✓✓ azul leído"
+                                    : "IA activa — la IA responde automáticamente los mensajes entrantes"}
                               </div>
                             </>
                           )}
@@ -3413,15 +3798,15 @@ export default function AdminPanel() {
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className={cn("text-xl font-bold", dm ? "text-white" : "text-slate-900")}>Cobranza Automatizada</h2>
-                    <p className={cn("text-sm mt-0.5", dm ? "text-slate-400" : "text-slate-500")}>Todos los planes de pago y recordatorios activos en la plataforma.</p>
+                    <h2 className={cn("text-xl font-bold", dm ? "text-white" : "text-slate-900")}>Cobranza de Sellia</h2>
+                    <p className={cn("text-sm mt-0.5", dm ? "text-slate-400" : "text-slate-500")}>Planes de pago de clientes de Sellia — cobros del servicio de la plataforma.</p>
                   </div>
                   <button
                     onClick={async () => {
                       setAdminSchedulerRunning(true);
                       try { await api.runCollectionScheduler(); } catch {}
                       setAdminSchedulerRunning(false);
-                      api.getAllCollections().then(setAdminCollections).catch(() => {});
+                      api.getCollections().then(setAdminCollections).catch(() => {});
                     }}
                     disabled={adminSchedulerRunning}
                     className={cn("flex items-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50", T.btn)}
@@ -3462,6 +3847,7 @@ export default function AdminPanel() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className={cn("border-b text-xs font-medium", dm ? "border-slate-800 text-slate-400" : "border-slate-100 text-slate-500")}>
+                          <th className="w-8 px-4 py-3" />
                           <th className="text-left px-4 py-3">Plan</th>
                           <th className="text-left px-4 py-3">Deudor</th>
                           <th className="text-left px-4 py-3">Cliente Sellia</th>
@@ -3469,50 +3855,183 @@ export default function AdminPanel() {
                           <th className="text-left px-4 py-3">Progreso</th>
                           <th className="text-left px-4 py-3">Próx. vence</th>
                           <th className="text-left px-4 py-3">Estado</th>
+                          <th className="text-left px-4 py-3">Acciones</th>
                         </tr>
                       </thead>
                       <tbody>
                         {adminCollections.map(plan => {
-                          const total = plan.installments?.length || 0;
+                          const totalInst = plan.installments?.length || 0;
                           const paid = plan.installments?.filter((i: any) => i.status === 'paid').length || 0;
                           const hasOverdue = plan.installments?.some((i: any) => i.status === 'overdue');
+                          const isExpanded = expandedPlanId === plan.id;
+                          const isLoading = planActionLoading === plan.id;
                           return (
-                            <tr key={plan.id} className={cn("border-b last:border-0", dm ? "border-slate-800 hover:bg-slate-800/50" : "border-slate-50 hover:bg-slate-50")}>
-                              <td className={cn("px-4 py-3 font-medium", dm ? "text-white" : "text-slate-900")}>{plan.name}</td>
-                              <td className={cn("px-4 py-3", dm ? "text-slate-300" : "text-slate-600")}>
-                                <div>{plan.debtor_name}</div>
-                                <div className={cn("text-xs", dm ? "text-slate-500" : "text-slate-400")}>{plan.debtor_phone}</div>
-                              </td>
-                              <td className={cn("px-4 py-3", dm ? "text-slate-300" : "text-slate-600")}>
-                                <div>{plan.user_name}</div>
-                                <div className={cn("text-xs", dm ? "text-slate-500" : "text-slate-400")}>{plan.user_company}</div>
-                              </td>
-                              <td className={cn("px-4 py-3 font-medium", dm ? "text-white" : "text-slate-900")}>${Number(plan.total_amount).toLocaleString('es-CL')}</td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <div className={cn("flex-1 h-1.5 rounded-full max-w-16", dm ? "bg-slate-700" : "bg-slate-200")}>
-                                    <div className="h-full rounded-full bg-emerald-500" style={{ width: total ? `${(paid/total)*100}%` : '0%' }} />
+                            <>
+                              <tr
+                                key={plan.id}
+                                className={cn("border-b", dm ? "border-slate-800 hover:bg-slate-800/40" : "border-slate-100 hover:bg-slate-50", isExpanded && (dm ? "bg-slate-800/40" : "bg-slate-50"))}
+                              >
+                                <td className="px-4 py-3">
+                                  <button onClick={() => setExpandedPlanId(isExpanded ? null : plan.id)} className={cn("p-0.5 rounded", dm ? "text-slate-400 hover:text-white" : "text-slate-400 hover:text-slate-700")}>
+                                    <ChevronRight className={cn("w-4 h-4 transition-transform", isExpanded && "rotate-90")} />
+                                  </button>
+                                </td>
+                                <td className={cn("px-4 py-3 font-medium", dm ? "text-white" : "text-slate-900")}>{plan.name}</td>
+                                <td className={cn("px-4 py-3", dm ? "text-slate-300" : "text-slate-600")}>
+                                  <div>{plan.debtor_name}</div>
+                                  {plan.debtor_phone && <div className={cn("text-xs", dm ? "text-slate-500" : "text-slate-400")}>{plan.debtor_phone}</div>}
+                                  {plan.debtor_email && <div className={cn("text-xs", dm ? "text-slate-500" : "text-slate-400")}>{plan.debtor_email}</div>}
+                                </td>
+                                <td className={cn("px-4 py-3", dm ? "text-slate-300" : "text-slate-600")}>
+                                  <div>{plan.user_name}</div>
+                                  {plan.user_company && <div className={cn("text-xs", dm ? "text-slate-500" : "text-slate-400")}>{plan.user_company}</div>}
+                                </td>
+                                <td className={cn("px-4 py-3 font-medium", dm ? "text-white" : "text-slate-900")}>${Number(plan.total_amount).toLocaleString('es-CL')}</td>
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <div className={cn("flex-1 h-1.5 rounded-full max-w-16", dm ? "bg-slate-700" : "bg-slate-200")}>
+                                      <div className="h-full rounded-full bg-emerald-500" style={{ width: totalInst ? `${(paid/totalInst)*100}%` : '0%' }} />
+                                    </div>
+                                    <span className={cn("text-xs", dm ? "text-slate-400" : "text-slate-500")}>{paid}/{totalInst}</span>
                                   </div>
-                                  <span className={cn("text-xs", dm ? "text-slate-400" : "text-slate-500")}>{paid}/{total}</span>
-                                </div>
-                              </td>
-                              <td className={cn("px-4 py-3 text-xs", dm ? "text-slate-300" : "text-slate-600")}>{plan.nextDue || '—'}</td>
-                              <td className="px-4 py-3">
-                                <span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium",
-                                  plan.status === 'completed' ? 'bg-blue-500/10 text-blue-500' :
-                                  hasOverdue ? 'bg-rose-500/10 text-rose-500' :
-                                  plan.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' :
-                                  'bg-slate-500/10 text-slate-500'
-                                )}>
-                                  {plan.status === 'completed' ? 'Completado' : hasOverdue ? 'Con mora' : plan.status === 'active' ? 'Activo' : 'Pausado'}
-                                </span>
-                              </td>
-                            </tr>
+                                </td>
+                                <td className={cn("px-4 py-3 text-xs", dm ? "text-slate-300" : "text-slate-600")}>{fmtDate(plan.nextDue)}</td>
+                                <td className="px-4 py-3">
+                                  <span className={cn("inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium",
+                                    plan.status === 'completed' ? 'bg-blue-500/10 text-blue-500' :
+                                    hasOverdue ? 'bg-rose-500/10 text-rose-500' :
+                                    plan.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' :
+                                    'bg-amber-500/10 text-amber-500'
+                                  )}>
+                                    {plan.status === 'completed' ? 'Completado' : hasOverdue ? 'Con mora' : plan.status === 'active' ? 'Activo' : 'Pausado'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-1">
+                                    {plan.status !== 'completed' && (
+                                      <button
+                                        onClick={() => togglePausePlan(plan)}
+                                        disabled={isLoading}
+                                        title={plan.status === 'active' ? 'Pausar plan' : 'Reactivar plan'}
+                                        className={cn("p-1.5 rounded-lg transition-colors disabled:opacity-40", dm ? "hover:bg-slate-700 text-amber-400" : "hover:bg-amber-50 text-amber-500")}
+                                      >
+                                        {plan.status === 'active' ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => openEditPlan(plan)}
+                                      disabled={isLoading}
+                                      title="Editar plan"
+                                      className={cn("p-1.5 rounded-lg transition-colors disabled:opacity-40", dm ? "hover:bg-slate-700 text-slate-400" : "hover:bg-slate-100 text-slate-500")}
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => deletePlan(plan)}
+                                      disabled={isLoading}
+                                      title="Eliminar plan"
+                                      className={cn("p-1.5 rounded-lg transition-colors disabled:opacity-40", dm ? "hover:bg-rose-500/20 text-rose-400" : "hover:bg-rose-50 text-rose-500")}
+                                    >
+                                      {isLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr key={`${plan.id}-detail`} className={cn(dm ? "bg-slate-800/20" : "bg-slate-50/80")}>
+                                  <td colSpan={9} className="px-8 py-3">
+                                    <div className="space-y-1.5">
+                                      <div className="flex items-center justify-between mb-2">
+                                    <p className={cn("text-xs font-semibold", dm ? "text-slate-400" : "text-slate-500")}>CUOTAS</p>
+                                    <button
+                                      onClick={async () => {
+                                        if (!window.confirm('¿Limpiar el historial de mensajes enviados? El scheduler volverá a enviar recordatorios desde cero.')) return;
+                                        await api.clearCollectionMessages(plan.id);
+                                        refreshAdminCollections();
+                                      }}
+                                      className={cn("text-xs px-2 py-1 rounded-lg", dm ? "text-slate-400 hover:bg-slate-700" : "text-slate-500 hover:bg-slate-200")}
+                                    >
+                                      Limpiar historial de mensajes
+                                    </button>
+                                  </div>
+                                      {plan.installments?.map((inst: any) => (
+                                        <div key={inst.id} className={cn("flex items-center gap-3 px-3 py-2 rounded-lg text-xs", dm ? "bg-slate-800" : "bg-white border border-slate-200")}>
+                                          <span className={cn("font-medium w-16", dm ? "text-slate-300" : "text-slate-600")}>N°{inst.installment_number}</span>
+                                          <span className={cn("w-24", dm ? "text-white" : "text-slate-900")}>${Number(inst.amount).toLocaleString('es-CL')}</span>
+                                          <span className={cn("w-28", dm ? "text-slate-400" : "text-slate-500")}>{fmtDate(inst.due_date)}</span>
+                                          <span className={cn("px-2 py-0.5 rounded-full font-medium",
+                                            inst.status === 'paid' ? 'bg-emerald-500/10 text-emerald-500' :
+                                            inst.status === 'overdue' ? 'bg-rose-500/10 text-rose-500' :
+                                            'bg-amber-500/10 text-amber-500'
+                                          )}>
+                                            {inst.status === 'paid' ? 'Pagada' : inst.status === 'overdue' ? 'Vencida' : 'Pendiente'}
+                                          </span>
+                                          {inst.status !== 'pending' || true ? (
+                                            <button
+                                              onClick={() => toggleInstallmentPaid(inst)}
+                                              className={cn("ml-auto px-2.5 py-1 rounded-lg text-xs font-medium transition-colors",
+                                                inst.status === 'paid'
+                                                  ? (dm ? "bg-slate-700 text-slate-300 hover:bg-slate-600" : "bg-slate-100 text-slate-600 hover:bg-slate-200")
+                                                  : (dm ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30" : "bg-emerald-50 text-emerald-600 hover:bg-emerald-100")
+                                              )}
+                                            >
+                                              {inst.status === 'paid' ? 'Desmarcar pago' : 'Marcar pagada'}
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </>
                           );
                         })}
                       </tbody>
                     </table>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Edit Plan Modal */}
+            {editingPlan && (
+              <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div className={cn("rounded-2xl shadow-2xl w-full max-w-md border", dm ? "bg-slate-900 border-slate-700" : "bg-white border-slate-200")}>
+                  <div className={cn("px-6 py-4 border-b flex justify-between items-center", dm ? "border-slate-800" : "border-slate-100")}>
+                    <h3 className={cn("font-semibold text-lg", dm ? "text-white" : "text-slate-900")}>Editar plan de cobranza</h3>
+                    <button onClick={() => setEditingPlan(null)} className={cn("p-1 rounded-lg", dm ? "hover:bg-slate-800 text-slate-400" : "hover:bg-slate-100 text-slate-500")}><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="px-6 py-4 space-y-3">
+                    {[
+                      { label: 'Nombre del plan', key: 'name', placeholder: 'Plan – Cliente' },
+                      { label: 'Teléfono del deudor', key: 'debtorPhone', placeholder: '+56912345678' },
+                      { label: 'Link de pago', key: 'paymentLink', placeholder: 'https://...' },
+                      { label: 'Datos bancarios', key: 'bankInfo', placeholder: 'Banco / RUT / Cuenta' },
+                      { label: 'Notas', key: 'notes', placeholder: 'Observaciones...' },
+                    ].map(({ label, key, placeholder }) => (
+                      <div key={key}>
+                        <label className={cn("block text-xs font-medium mb-1", dm ? "text-slate-400" : "text-slate-500")}>{label}</label>
+                        <input
+                          value={(editPlanForm as any)[key]}
+                          onChange={e => setEditPlanForm(p => ({ ...p, [key]: e.target.value }))}
+                          placeholder={placeholder}
+                          className={cn("w-full px-3 py-2 rounded-lg border text-sm", dm ? "bg-slate-800 border-slate-700 text-white placeholder-slate-500" : "bg-white border-slate-200 text-slate-900 placeholder-slate-400")}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className={cn("px-6 py-4 border-t flex gap-3 justify-end", dm ? "border-slate-800" : "border-slate-100")}>
+                    <button onClick={() => setEditingPlan(null)} className={cn("px-4 py-2 rounded-lg text-sm", dm ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>Cancelar</button>
+                    <button
+                      onClick={saveEditPlan}
+                      disabled={planActionLoading === editingPlan?.id}
+                      className={cn("px-4 py-2 rounded-lg text-sm font-medium text-white flex items-center gap-2 disabled:opacity-50", T.btn)}
+                    >
+                      {planActionLoading === editingPlan?.id ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                      Guardar cambios
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

@@ -137,9 +137,10 @@ router.get('/all', (req: AuthRequest, res: Response) => {
     if (user?.role !== 'superadmin') { res.status(403).json({ error: 'Forbidden' }); return; }
 
     const plans = db.prepare(`
-      SELECT pp.*, u.name as user_name, u.company as user_company
+      SELECT pp.*, u.name as user_name, u.company as user_company, l.email as debtor_email
       FROM payment_plans pp
       LEFT JOIN users u ON u.id = pp.user_id
+      LEFT JOIN leads l ON l.id = pp.lead_id
       ORDER BY pp.created_at DESC
     `).all() as any[];
 
@@ -364,6 +365,31 @@ router.put('/config', (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error('Update collection config error:', error);
+    res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ─── DELETE /api/collections/:id/messages — clear sent message history ────────
+
+router.delete('/:id/messages', (req: AuthRequest, res: Response) => {
+  try {
+    const db = getDb();
+    const effectiveUserId = getEffectiveUserId(req);
+    const user = db.prepare('SELECT role FROM users WHERE id = ?').get(req.userId) as any;
+
+    const plan = user?.role === 'superadmin'
+      ? db.prepare('SELECT id FROM payment_plans WHERE id = ?').get(req.params.id) as any
+      : db.prepare('SELECT id FROM payment_plans WHERE id = ? AND user_id = ?').get(req.params.id, effectiveUserId) as any;
+
+    if (!plan) { res.status(404).json({ error: 'Plan no encontrado' }); return; }
+
+    db.prepare(`
+      DELETE FROM collection_messages_sent
+      WHERE installment_id IN (SELECT id FROM payment_installments WHERE plan_id = ?)
+    `).run(req.params.id);
+
+    res.json({ success: true });
+  } catch (error: any) {
     res.status(500).json({ error: 'Error interno' });
   }
 });

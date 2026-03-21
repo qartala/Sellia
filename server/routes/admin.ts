@@ -306,7 +306,7 @@ router.put('/users/:id/collection-prompt', (req: AuthRequest, res: Response) => 
     const db = getDb();
     const existing = db.prepare('SELECT id FROM knowledge_base WHERE user_id = ?').get(req.params.id);
     if (existing) {
-      db.prepare("UPDATE knowledge_base SET collection_prompt = ?, updated_at = datetime('now') WHERE user_id = ?")
+      db.prepare("UPDATE knowledge_base SET collection_prompt = ? WHERE user_id = ?")
         .run(collection_prompt || '', req.params.id);
     } else {
       db.prepare("INSERT INTO knowledge_base (user_id, content, collection_prompt) VALUES (?, '', ?)")
@@ -336,13 +336,74 @@ router.put('/sellia-collection-prompt', (req: AuthRequest, res: Response) => {
     const db = getDb();
     const existing = db.prepare('SELECT id FROM knowledge_base WHERE user_id = ?').get(req.userId);
     if (existing) {
-      db.prepare("UPDATE knowledge_base SET collection_prompt = ?, updated_at = datetime('now') WHERE user_id = ?")
+      db.prepare("UPDATE knowledge_base SET collection_prompt = ? WHERE user_id = ?")
         .run(collection_prompt || '', req.userId);
     } else {
       db.prepare("INSERT INTO knowledge_base (user_id, content, collection_prompt) VALUES (?, '', ?)")
         .run(req.userId, collection_prompt || '');
     }
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Collection AI preview (generate a sample collection message) ────────────
+
+// POST /api/admin/collection-preview
+// body: { userId?, debtorName, installNum, amount, dueDate, payLink?, bankInfo?, msgType, isSellia? }
+router.post('/collection-preview', async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId, debtorName, installNum, amount, dueDate, payLink, bankInfo, msgType, isSellia } = req.body;
+    if (!debtorName || !installNum || !amount || !dueDate || !msgType) {
+      res.status(400).json({ error: 'Faltan campos requeridos.' });
+      return;
+    }
+
+    const db = getDb();
+    let collectionPrompt = '';
+    if (isSellia) {
+      const row = db.prepare('SELECT collection_prompt FROM knowledge_base WHERE user_id = ?').get(req.userId) as any;
+      collectionPrompt = row?.collection_prompt || '';
+    } else if (userId) {
+      const row = db.prepare('SELECT collection_prompt FROM knowledge_base WHERE user_id = ?').get(userId) as any;
+      collectionPrompt = row?.collection_prompt || '';
+    }
+
+    const META: Record<string, { timing: string; tone: string }> = {
+      reminder_5d: { timing: 'faltan 5 días para el vencimiento', tone: 'amable y preventivo' },
+      due_day:     { timing: 'hoy es el día de vencimiento',       tone: 'directo pero cordial' },
+      late_3d:     { timing: 'la cuota venció hace 3 días y no se registró pago', tone: 'preocupado, ofrece ayuda para coordinar' },
+      late_7d:     { timing: 'la cuota venció hace 7 días sin respuesta',         tone: 'más serio, menciona posible impacto sin ser agresivo' },
+      late_15d:    { timing: 'la cuota venció hace 15 días sin pago',             tone: 'firme y claro, informa suspensión del servicio hasta regularizar' },
+    };
+    const meta = META[msgType];
+    if (!meta) { res.status(400).json({ error: 'Tipo de mensaje inválido.' }); return; }
+
+    const paymentInfo = [
+      payLink ? `Link de pago: ${payLink}` : null,
+      bankInfo ? `Datos bancarios: ${bankInfo}` : null,
+      'Efectivo (coordinar directamente)',
+    ].filter(Boolean).join('\n');
+
+    const openai = getOpenAI();
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.4,
+      messages: [
+        {
+          role: 'system',
+          content: `Eres un asistente de cobranza por WhatsApp. Tu trabajo es redactar mensajes de cobro efectivos, humanos y en el tono correcto según el contexto.\n\n${collectionPrompt ? `CONTEXTO DEL NEGOCIO:\n${collectionPrompt}\n` : ''}REGLAS:\n- Escribe SOLO el mensaje de WhatsApp, sin explicaciones ni metadatos.\n- Usa lenguaje natural y cercano, como lo haría una persona real.\n- Incluye emojis con moderación.\n- Si hay link de pago o datos bancarios, inclúyelos de forma natural.\n- El mensaje debe ser conciso: máximo 4-5 líneas.`,
+        },
+        {
+          role: 'user',
+          content: `Redacta un mensaje de WhatsApp para cobro con estas características:\n\n- Contexto de timing: ${meta.timing}\n- Tono requerido: ${meta.tone}\n- Nombre del deudor: ${debtorName}\n- Número de cuota: ${installNum}\n- Monto: $${amount}\n- Fecha de vencimiento: ${dueDate}\n- Opciones de pago:\n${paymentInfo}\n\nResponde SOLO con el mensaje listo para copiar y enviar por WhatsApp.`,
+        },
+      ],
+    });
+
+    const message = completion.choices[0]?.message?.content?.trim() || '';
+    res.json({ message });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -590,7 +651,7 @@ router.get('/leads/recent', (req: AuthRequest, res: Response) => {
   try {
     const db = getDb();
     const leads = db.prepare(`
-      SELECT l.id, l.name, l.status, l.channel, l.updated_at,
+      SELECT l.id, l.name, l.status, l.channel, COALESCE(l.updated_at, l.created_at) as updated_at,
         u.id as user_id, u.name as client_name, u.company as client_company,
         (SELECT COUNT(*) FROM messages WHERE lead_id = l.id) as message_count,
         (SELECT content FROM messages WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_message,
@@ -598,7 +659,7 @@ router.get('/leads/recent', (req: AuthRequest, res: Response) => {
       FROM leads l
       JOIN users u ON u.id = l.user_id
       WHERE u.role != 'superadmin'
-      ORDER BY l.updated_at DESC
+      ORDER BY COALESCE(l.updated_at, l.created_at) DESC
       LIMIT 50
     `).all();
     res.json(leads);
@@ -612,13 +673,14 @@ router.get('/users/:id/leads', (req: AuthRequest, res: Response) => {
   try {
     const db = getDb();
     const leads = db.prepare(`
-      SELECT l.id, l.name, l.company, l.channel, l.status, l.score, l.created_at, l.updated_at,
+      SELECT l.id, l.name, l.company, l.channel, l.status, l.score, l.created_at,
+        COALESCE(l.updated_at, l.created_at) as updated_at,
         (SELECT COUNT(*) FROM messages WHERE lead_id = l.id) as message_count,
         (SELECT content FROM messages WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_message,
         (SELECT created_at FROM messages WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) as last_message_at
       FROM leads l
       WHERE l.user_id = ?
-      ORDER BY l.updated_at DESC
+      ORDER BY COALESCE(l.updated_at, l.created_at) DESC
     `).all(req.params.id);
     res.json(leads);
   } catch (error: any) {
@@ -716,7 +778,7 @@ router.get('/users/:id/stats', (req: AuthRequest, res: Response) => {
     `).all(uid);
 
     const recentLeads = db.prepare(`
-      SELECT id, name, status, channel, score, updated_at FROM leads WHERE user_id = ? ORDER BY updated_at DESC LIMIT 10
+      SELECT id, name, status, channel, score, COALESCE(updated_at, created_at) as updated_at FROM leads WHERE user_id = ? ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 10
     `).all(uid);
 
     res.json({

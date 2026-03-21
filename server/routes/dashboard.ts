@@ -12,8 +12,8 @@ router.get('/stats', (req: AuthRequest, res: Response) => {
 
     // Lead stats
     const totalLeads = (db.prepare('SELECT COUNT(*) as count FROM leads WHERE user_id = ?').get(userId) as any).count;
-    const resolvedByAI = (db.prepare("SELECT COUNT(*) as count FROM leads WHERE user_id = ? AND status IN ('Calificado','Cerrado Ganado','Cerrado Perdido')").get(userId) as any).count;
-    const handedToHuman = (db.prepare("SELECT COUNT(*) as count FROM leads WHERE user_id = ? AND status IN ('En Negociación','Nuevo')").get(userId) as any).count;
+    const resolvedByAI = (db.prepare("SELECT COUNT(*) as count FROM leads WHERE user_id = ? AND (human_mode = 0 OR human_mode IS NULL) AND status IN ('Calificado','En Negociación','Cerrado Ganado','Cerrado Perdido')").get(userId) as any).count;
+    const handedToHuman = (db.prepare("SELECT COUNT(*) as count FROM leads WHERE user_id = ? AND human_mode = 1").get(userId) as any).count;
     const wonLeads = (db.prepare("SELECT COUNT(*) as count FROM leads WHERE user_id = ? AND status = 'Cerrado Ganado'").get(userId) as any).count;
     const conversionRate = totalLeads > 0 ? ((wonLeads / totalLeads) * 100).toFixed(1) : '0.0';
 
